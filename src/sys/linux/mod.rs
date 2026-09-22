@@ -286,24 +286,23 @@ fn drain_uevents(fd: c_int) -> bool {
     // The kernel caps a uevent at 2 KiB; this leaves room to spare.
     let mut buf = [0u8; 8192];
     loop {
-        {
-            // SAFETY: `buf` is valid for `buf.len()` bytes; the socket is ours.
-            let n = unsafe { ffi::recv(fd, buf.as_mut_ptr() as *mut c_void, buf.len(), 0) };
-            if n < 0 {
-                match ffi::errno() {
-                    ffi::EINTR => continue,
-                    // Drained, or the buffer overflowed (ENOBUFS): in the
-                    // latter case we may have missed events, so rescan.
-                    ffi::EAGAIN => break,
-                    _ => {
-                        interesting = true;
-                        break;
-                    }
+        // SAFETY: `buf` is valid for `buf.len()` bytes; the socket is ours.
+        let n = unsafe { ffi::recv(fd, buf.as_mut_ptr() as *mut c_void, buf.len(), 0) };
+        if n < 0 {
+            match ffi::errno() {
+                ffi::EINTR => continue,
+                // Nothing left to read.
+                ffi::EAGAIN => break,
+                // Anything else (a dropped message on a full receive buffer,
+                // say) means events may have been missed, so ask for a scan.
+                _ => {
+                    interesting = true;
+                    break;
                 }
             }
-            if is_usb_device_uevent(&buf[..n as usize]) {
-                interesting = true;
-            }
+        }
+        if is_usb_device_uevent(&buf[..n as usize]) {
+            interesting = true;
         }
     }
     interesting
