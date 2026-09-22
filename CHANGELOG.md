@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/KarpelesLab/rawusb/compare/v0.1.0...v0.1.1) - 2026-09-22
+
+### Other
+
+- Fix issues found reviewing the new hotplug and isochronous code
+- Test that two sessions can watch hotplug at the same time
+- Simplify the netlink drain loop
+- Assert the Windows structure layouts at compile time
+- Document the hotplug feature and the Windows isochronous packet rules
+- Add Windows and macOS hotplug backends, and Windows isochronous transfers
+- Add optional hotplug notifications with a Linux netlink backend
+- Make hardware tests tolerate synthesised root hubs
+- Write README and changelog for the initial release
+- Add macOS backend (IOKit IOUSBLib, CFRunLoop event thread)
+- Add Windows backend (SetupAPI/CfgMgr enumeration, hub ioctls, WinUSB + IOCP)
+- Add hardware tests and list_devices example
+- Add core API and Linux usbfs backend
+- Fix config descriptor test fixture attributes
+
 ### Added
 - Core API: `Context`, `Device`, `DeviceHandle`, `Transfer` with synchronous
   helpers and the asynchronous submit/cancel/wait/callback/`Future` layer.
