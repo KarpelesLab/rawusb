@@ -174,7 +174,15 @@ impl DeviceHandle {
     /// instance re-enumerated with a different descriptor), the call fails
     /// with [`ErrorKind::NotFound`] and the handle must be reopened.
     pub fn reset(&self) -> Result<()> {
-        self.shared.sys.reset()
+        self.shared.sys.reset()?;
+        // A reset unbinds every interface; take ours back, as libusb does.
+        let claimed = self.claimed_interfaces();
+        for iface in claimed {
+            if self.shared.sys.claim_interface(iface).is_err() {
+                return Err(Error::with_message(ErrorKind::NotFound, "device changed across reset; reopen it"));
+            }
+        }
+        Ok(())
     }
 
     /// Whether a kernel driver is bound to the interface. Always `false` on

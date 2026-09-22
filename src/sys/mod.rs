@@ -4,7 +4,7 @@
 //! layer above uses without further `cfg` gating:
 //!
 //! - `Context`: `new() -> Result<Arc<Self>>`, `enumerate(&self) ->
-//!   Result<Vec<DeviceInfo>>`, `open(&self, &DeviceInfo) -> Result<Arc<Handle>>`.
+//!   Result<Vec<DeviceInfo>>`, `open(&self, &Arc<DeviceInfo>) -> Result<Arc<Handle>>`.
 //! - `DeviceInfo`: the enumeration snapshot with its public fields
 //!   (`bus_number`, `address`, `port_numbers`, `speed`, `device_descriptor`,
 //!   `configs`, `active_config`).

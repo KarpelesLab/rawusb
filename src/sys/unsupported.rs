@@ -22,7 +22,7 @@ impl Context {
         Err(Error::new(ErrorKind::NotSupported))
     }
 
-    pub(crate) fn open(&self, _dev: &DeviceInfo) -> Result<Arc<Handle>> {
+    pub(crate) fn open(&self, _dev: &Arc<DeviceInfo>) -> Result<Arc<Handle>> {
         Err(Error::new(ErrorKind::NotSupported))
     }
 }

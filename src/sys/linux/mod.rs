@@ -103,7 +103,7 @@ impl Context {
         Ok(out)
     }
 
-    pub(crate) fn open(self: &Arc<Self>, dev: &DeviceInfo) -> Result<Arc<Handle>> {
+    pub(crate) fn open(self: &Arc<Self>, dev: &Arc<DeviceInfo>) -> Result<Arc<Handle>> {
         let file = File::options().read(true).write(true).open(&dev.location.devnode).map_err(|e| {
             let err = Error::from(e);
             let kind = if err.kind() == ErrorKind::NotFound {
