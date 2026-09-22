@@ -357,6 +357,12 @@ unsafe extern "system" {
 /// version: importing those statically would stop the whole process from
 /// loading on an older system, whereas resolving them here simply reports
 /// the feature as unsupported. `symbol` must be NUL-terminated.
+///
+/// `GetModuleHandleW` only finds a module that is already mapped, which is
+/// the case here because every DLL looked up this way also provides symbols
+/// this crate imports statically (see the `#[link]` blocks below). Dropping
+/// one of those imports would quietly turn the dependent feature into
+/// `NotSupported`.
 pub(crate) fn proc_address(module: &str, symbol: &[u8]) -> Option<*const c_void> {
     debug_assert_eq!(symbol.last(), Some(&0), "symbol name must be NUL-terminated");
     let module = wide(module);

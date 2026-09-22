@@ -245,10 +245,14 @@ fn event_loop(ctx: Weak<Context>, iocp: Arc<OwnedHandle>) {
         if !ov.is_null() {
             // SAFETY: every OVERLAPPED we hand to the kernel is the first
             // field of a leaked `Box<OvEntry>`, recovered exactly once here.
-            let entry = unsafe { Box::from_raw(ov as *mut OvEntry) };
+            let mut entry = unsafe { Box::from_raw(ov as *mut OvEntry) };
             let inner = Arc::clone(&entry.inner);
+            // The kernel is done with the buffer, so let go of the
+            // registration before reporting completion: a callback that
+            // resubmits the transfer would otherwise register the same pages
+            // a second time while this one is still live.
+            drop(entry.iso_buffer.take());
             inner.handle.finish(&inner, ov as usize, bytes as usize, err, &entry.iso_descs);
-            // Dropping the entry also unregisters any isochronous buffer.
             drop(entry);
         } else if ok == FALSE && err != WAIT_TIMEOUT {
             // The port is gone.
@@ -1161,8 +1165,25 @@ impl Handle {
 
     pub(crate) fn release_interface(&self, interface: u8) -> Result<()> {
         match lock(&self.claimed).remove(&interface) {
-            Some(_) => Ok(()),
+            Some(_) => {
+                self.forget_iso_streams(interface);
+                Ok(())
+            }
             None => Err(Error::with_message(ErrorKind::NotFound, "interface not claimed")),
+        }
+    }
+
+    /// Forgets the isochronous stream state of every endpoint of an
+    /// interface, so that the next submission starts a stream rather than
+    /// trying to continue one that no longer exists.
+    fn forget_iso_streams(&self, interface: u8) {
+        let Some(cfg) = self.cfg.as_ref() else { return };
+        let Some(interface) = cfg.interface(interface) else { return };
+        let mut inflight = lock(&self.iso_inflight);
+        for alt in &interface.alt_settings {
+            for endpoint in &alt.endpoints {
+                inflight.remove(&endpoint.address);
+            }
         }
     }
 
@@ -1176,6 +1197,9 @@ impl Handle {
             return Err(os_error("WinUsb_SetCurrentAlternateSetting"));
         }
         c.alt = alt;
+        drop(claimed);
+        // The pipes of the old setting are gone, and with them their streams.
+        self.forget_iso_streams(interface);
         Ok(())
     }
 
@@ -1332,8 +1356,13 @@ impl Handle {
         Ok(())
     }
 
-    /// `wMaxPacketSize` of an endpoint in the alternate setting currently
-    /// selected on the interface that owns it.
+    /// Bytes an endpoint moves per service interval, in the alternate
+    /// setting currently selected on the interface that owns it.
+    ///
+    /// This is what WinUSB reports as the pipe's maximum packet size, and on
+    /// a SuperSpeed endpoint it comes from the companion descriptor
+    /// (`wBytesPerInterval`) rather than from `wMaxPacketSize`, which tops
+    /// out at 1024.
     fn endpoint_max_packet(&self, address: u8) -> Result<u32> {
         let cfg = self
             .cfg
@@ -1345,7 +1374,10 @@ impl Handle {
                 && let Some(alt) = interface.alt_setting(c.alt)
                 && let Some(endpoint) = alt.endpoint(address)
             {
-                return Ok(endpoint.max_packet_size());
+                return Ok(match endpoint.ss_companion {
+                    Some(companion) if companion.bytes_per_interval != 0 => companion.bytes_per_interval as u32,
+                    _ => endpoint.max_packet_size(),
+                });
             }
         }
         Err(Error::with_message(
@@ -1426,10 +1458,17 @@ impl Handle {
                 (api.write_asap)(handle, 0, total as u32, continue_stream, ov)
             }
         };
-        if ok != FALSE || last_error() == ERROR_IO_PENDING {
-            *inflight.entry(endpoint).or_insert(0) += 1;
+        // Read the error while it is still this call's: returning `ok` for
+        // the caller to interpret would put a lock release and a few drops
+        // between the failure and `GetLastError`.
+        let error = if ok == FALSE { last_error() } else { ERROR_SUCCESS };
+        if ok == FALSE && error != ERROR_IO_PENDING {
+            return Err(Error::from_code(errno_kind(error as i32), error as i32).context("submit isochronous transfer"));
         }
-        Ok((dev.file.0, ok))
+        *inflight.entry(endpoint).or_insert(0) += 1;
+        // Pending counts as submitted, so the caller does not look at
+        // `GetLastError` again.
+        Ok((dev.file.0, TRUE))
     }
 
     fn control_file(&self) -> HANDLE {

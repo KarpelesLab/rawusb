@@ -241,11 +241,20 @@ fn event_loop(ctx: Weak<Context>, mut reader: PipeReader) {
         }
 
         #[cfg(feature = "hotplug")]
-        if let (Some(i), Some((socket, notify))) = (hotplug_index, &hotplug)
-            && fds[i].revents & (ffi::POLLIN | ffi::POLLERR | ffi::POLLHUP) != 0
-            && drain_uevents(socket.as_raw_fd())
-        {
-            notify();
+        if let (Some(i), Some((socket, notify))) = (hotplug_index, &hotplug) {
+            let revents = fds[i].revents;
+            if revents & ffi::POLLIN != 0 && drain_uevents(socket.as_raw_fd()) {
+                notify();
+            }
+            if revents & (ffi::POLLERR | ffi::POLLHUP | ffi::POLLNVAL) != 0 {
+                // A socket stuck in an error state would keep `poll` from
+                // ever blocking again. Stop watching it, and ask for one
+                // last scan so a change it may have carried is not lost.
+                if let Some(c) = ctx.upgrade() {
+                    *lock(&c.hotplug) = None;
+                }
+                notify();
+            }
         }
 
         let now = Instant::now();
@@ -286,8 +295,20 @@ fn drain_uevents(fd: c_int) -> bool {
     // The kernel caps a uevent at 2 KiB; this leaves room to spare.
     let mut buf = [0u8; 8192];
     loop {
-        // SAFETY: `buf` is valid for `buf.len()` bytes; the socket is ours.
-        let n = unsafe { ffi::recv(fd, buf.as_mut_ptr() as *mut c_void, buf.len(), 0) };
+        let mut from = ffi::sockaddr_nl::default();
+        let mut from_len = std::mem::size_of::<ffi::sockaddr_nl>() as u32;
+        // SAFETY: `buf` is valid for `buf.len()` bytes, `from` for the length
+        // passed alongside it; the socket is ours.
+        let n = unsafe {
+            ffi::recvfrom(
+                fd,
+                buf.as_mut_ptr() as *mut c_void,
+                buf.len(),
+                0,
+                &mut from as *mut ffi::sockaddr_nl as *mut c_void,
+                &mut from_len,
+            )
+        };
         if n < 0 {
             match ffi::errno() {
                 ffi::EINTR => continue,
@@ -300,6 +321,11 @@ fn drain_uevents(fd: c_int) -> bool {
                     break;
                 }
             }
+        }
+        // Port id zero is the kernel. Anything else is another process
+        // sending to the group, which says nothing about the hardware.
+        if from.nl_pid != 0 {
+            continue;
         }
         if is_usb_device_uevent(&buf[..n as usize]) {
             interesting = true;

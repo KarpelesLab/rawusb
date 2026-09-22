@@ -189,8 +189,10 @@ impl<'a> HotplugBuilder<'a> {
     ///
     /// The callback runs on the context's hotplug thread, never on the
     /// transfer-completion thread, so it may take its time; it must not be
-    /// blocked on something that itself waits for hotplug events. It may
-    /// register or drop other watchers.
+    /// blocked on something that itself waits for hotplug events. It may drop
+    /// watchers, including its own registration, but it must not start a new
+    /// one: watchers are started and torn down against the same lock that
+    /// serialises dispatch.
     ///
     /// The one exception is
     /// [`enumerate_existing`](Self::enumerate_existing): that initial batch
@@ -412,6 +414,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// thread only ever holds a `Weak` to reach it.
 pub(crate) struct Registry {
     state: Mutex<State>,
+    /// Held while events are handed to callbacks, and while a new listener is
+    /// added together with its initial batch. Keeps a rescan from slipping
+    /// between a listener being added and its own devices being reported,
+    /// which would let it see a departure before the matching arrival.
+    dispatch: Mutex<()>,
     signal: Arc<Signal>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -420,6 +427,7 @@ impl Registry {
     pub(crate) fn new() -> Registry {
         Registry {
             state: Mutex::new(State::default()),
+            dispatch: Mutex::new(()),
             signal: Arc::new(Signal::default()),
             thread: Mutex::new(None),
         }
@@ -429,6 +437,7 @@ impl Registry {
         let inner = ctx.inner();
         let registry = &inner.hotplug;
         let callback = Arc::new(Mutex::new(callback));
+        let dispatching = lock(&registry.dispatch);
 
         let (id, seed) = {
             let mut st = lock(&registry.state);
@@ -458,7 +467,8 @@ impl Registry {
             (id, seed)
         };
 
-        // Deliver the initial batch outside the registry lock.
+        // Deliver the initial batch outside the registry lock, but still
+        // holding off any rescan.
         for info in seed {
             let device = Device::new(ctx.clone(), info);
             if filter.matches(&device) {
@@ -466,6 +476,7 @@ impl Registry {
                 (lock(&callback))(&event);
             }
         }
+        drop(dispatching);
 
         Ok(HotplugRegistration {
             ctx: Arc::downgrade(inner),
@@ -486,6 +497,7 @@ impl Registry {
         };
         let current: Vec<Arc<sys::DeviceInfo>> = current.into_iter().map(Arc::new).collect();
 
+        let _dispatching = lock(&self.dispatch);
         let (arrived, left, listeners) = {
             let mut st = lock(&self.state);
             let previous = std::mem::replace(&mut st.known, current.clone());

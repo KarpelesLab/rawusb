@@ -81,7 +81,7 @@ pub(crate) struct sockaddr_nl {
 unsafe extern "C" {
     pub(crate) fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
     pub(crate) fn bind(fd: c_int, addr: *const c_void, len: u32) -> c_int;
-    pub(crate) fn recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
+    pub(crate) fn recvfrom(fd: c_int, buf: *mut c_void, len: usize, flags: c_int, addr: *mut c_void, addr_len: *mut u32) -> isize;
 }
 
 unsafe extern "C" {
