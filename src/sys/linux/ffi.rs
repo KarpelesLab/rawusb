@@ -3,7 +3,7 @@
 
 #![allow(non_camel_case_types, dead_code)]
 
-use std::ffi::{c_int, c_short, c_ulong};
+use std::ffi::{c_int, c_short, c_ulong, c_void};
 
 #[repr(C)]
 pub(crate) struct pollfd {
@@ -20,6 +20,8 @@ pub(crate) const POLLNVAL: c_short = 0x020;
 
 pub(crate) const F_GETFL: c_int = 3;
 pub(crate) const F_SETFL: c_int = 4;
+pub(crate) const F_SETFD: c_int = 2;
+pub(crate) const FD_CLOEXEC: c_int = 1;
 
 #[cfg(any(target_arch = "mips", target_arch = "mips64"))]
 pub(crate) const O_NONBLOCK: c_int = 0o200;
@@ -56,6 +58,32 @@ pub(crate) const ESHUTDOWN: i32 = 108;
 pub(crate) const ETIMEDOUT: i32 = 110;
 pub(crate) const EREMOTEIO: i32 = 121;
 
+// Netlink, for the hotplug backend. `SOCK_CLOEXEC`/`SOCK_NONBLOCK` are
+// deliberately not used: their values follow `O_CLOEXEC`/`O_NONBLOCK`, which
+// differ on sparc and alpha. `fcntl` is spelled the same everywhere.
+pub(crate) const AF_NETLINK: c_int = 16;
+pub(crate) const SOCK_RAW: c_int = 3;
+pub(crate) const NETLINK_KOBJECT_UEVENT: c_int = 15;
+/// Multicast group 1 carries the kernel's own uevents. Unlike group 2 (what
+/// udev re-broadcasts), it is readable without privileges.
+pub(crate) const UEVENT_GROUP_KERNEL: u32 = 1;
+
+/// `struct sockaddr_nl`.
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct sockaddr_nl {
+    pub(crate) nl_family: u16,
+    pub(crate) nl_pad: u16,
+    pub(crate) nl_pid: u32,
+    pub(crate) nl_groups: u32,
+}
+
+unsafe extern "C" {
+    pub(crate) fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
+    pub(crate) fn bind(fd: c_int, addr: *const c_void, len: u32) -> c_int;
+    pub(crate) fn recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
+}
+
 unsafe extern "C" {
     /// glibc declares the request as `unsigned long`, musl and bionic as
     /// `int`. Both read the same low 32 bits from the argument register, so
@@ -68,6 +96,15 @@ unsafe extern "C" {
 /// Last `errno`.
 pub(crate) fn errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+/// Marks a descriptor close-on-exec.
+pub(crate) fn set_cloexec(fd: c_int) -> std::io::Result<()> {
+    // SAFETY: plain fcntl call on a descriptor we own.
+    if unsafe { fcntl(fd, F_SETFD, FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Puts a descriptor into non-blocking mode.

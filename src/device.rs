@@ -25,6 +25,11 @@ impl Device {
         Device { ctx, info }
     }
 
+    #[cfg(feature = "hotplug")]
+    pub(crate) fn info(&self) -> &Arc<sys::DeviceInfo> {
+        &self.info
+    }
+
     /// The context this device was enumerated from.
     pub fn context(&self) -> &Context {
         &self.ctx

@@ -18,6 +18,8 @@ use std::ffi::{c_int, c_ulong, c_void};
 use std::fs::File;
 use std::io::{PipeReader, PipeWriter, Read, Write};
 use std::os::fd::AsRawFd;
+#[cfg(feature = "hotplug")]
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -64,6 +66,8 @@ pub(crate) struct Location {
 pub(crate) struct Context {
     handles: Mutex<Vec<Weak<Handle>>>,
     wake: PipeWriter,
+    #[cfg(feature = "hotplug")]
+    hotplug: Mutex<Option<Hotplug>>,
 }
 
 impl Context {
@@ -74,6 +78,8 @@ impl Context {
         let ctx = Arc::new(Context {
             handles: Mutex::new(Vec::new()),
             wake: writer,
+            #[cfg(feature = "hotplug")]
+            hotplug: Mutex::new(None),
         });
         let weak = Arc::downgrade(&ctx);
         std::thread::Builder::new()
@@ -101,6 +107,22 @@ impl Context {
         }
         out.sort_by_key(|d| (d.bus_number, d.address));
         Ok(out)
+    }
+
+    /// Starts reporting device changes through `notify`.
+    #[cfg(feature = "hotplug")]
+    pub(crate) fn watch_hotplug(self: &Arc<Self>, notify: Notifier) -> Result<()> {
+        let mut slot = lock(&self.hotplug);
+        if slot.is_some() {
+            return Ok(());
+        }
+        *slot = Some(Hotplug {
+            socket: Arc::new(uevent_socket()?),
+            notify,
+        });
+        drop(slot);
+        self.wake();
+        Ok(())
     }
 
     pub(crate) fn open(self: &Arc<Self>, dev: &Arc<DeviceInfo>) -> Result<Arc<Handle>> {
@@ -152,12 +174,29 @@ fn event_loop(ctx: Weak<Context>, mut reader: PipeReader) {
                 .collect()
         };
 
-        let mut fds: Vec<ffi::pollfd> = Vec::with_capacity(handles.len() + 1);
+        let mut fds: Vec<ffi::pollfd> = Vec::with_capacity(handles.len() + 2);
         fds.push(ffi::pollfd {
             fd: wake_fd,
             events: ffi::POLLIN,
             revents: 0,
         });
+        // Keep the socket (and the callback) alive for this whole iteration:
+        // the context may be dropped while we sit in `poll`, and polling a
+        // descriptor that another thread has closed is a use-after-close.
+        #[cfg(feature = "hotplug")]
+        let hotplug: Option<HotplugPass> = ctx
+            .upgrade()
+            .and_then(|c| lock(&c.hotplug).as_ref().map(|h| (Arc::clone(&h.socket), Arc::clone(&h.notify))));
+        #[cfg(feature = "hotplug")]
+        let hotplug_index = hotplug.as_ref().map(|(socket, _)| {
+            fds.push(ffi::pollfd {
+                fd: socket.as_raw_fd(),
+                events: ffi::POLLIN,
+                revents: 0,
+            });
+            fds.len() - 1
+        });
+        let first_handle = fds.len();
         for h in &handles {
             fds.push(ffi::pollfd {
                 fd: h.file.as_raw_fd(),
@@ -199,8 +238,16 @@ fn event_loop(ctx: Weak<Context>, mut reader: PipeReader) {
             break;
         }
 
+        #[cfg(feature = "hotplug")]
+        if let (Some(i), Some((socket, notify))) = (hotplug_index, &hotplug)
+            && fds[i].revents & (ffi::POLLIN | ffi::POLLERR | ffi::POLLHUP) != 0
+            && drain_uevents(socket.as_raw_fd())
+        {
+            notify();
+        }
+
         let now = Instant::now();
-        for (h, pfd) in handles.iter().zip(fds.iter().skip(1)) {
+        for (h, pfd) in handles.iter().zip(fds.iter().skip(first_handle)) {
             let re = pfd.revents;
             if re & (ffi::POLLOUT | ffi::POLLERR | ffi::POLLHUP) != 0 {
                 h.reap();
@@ -211,6 +258,112 @@ fn event_loop(ctx: Weak<Context>, mut reader: PipeReader) {
             h.expire(now);
         }
     }
+}
+
+// ----- hotplug -------------------------------------------------------------------
+
+/// The netlink socket a context listens on, with the callback to fire when it
+/// says something interesting.
+/// Callback the neutral layer installs to hear about device changes.
+#[cfg(feature = "hotplug")]
+pub(crate) type Notifier = Arc<dyn Fn() + Send + Sync>;
+
+/// What the event thread needs to service the netlink socket for one pass.
+#[cfg(feature = "hotplug")]
+type HotplugPass = (Arc<OwnedFd>, Notifier);
+
+#[cfg(feature = "hotplug")]
+struct Hotplug {
+    /// Shared so that the event thread can keep the socket open across a
+    /// `poll` even if the context is dropped meanwhile.
+    socket: Arc<OwnedFd>,
+    notify: Notifier,
+}
+
+/// Reads every pending uevent. Returns `true` if any of them was a USB device
+/// coming or going.
+#[cfg(feature = "hotplug")]
+fn drain_uevents(fd: c_int) -> bool {
+    let mut interesting = false;
+    // The kernel caps a uevent at 2 KiB; this leaves room to spare.
+    let mut buf = [0u8; 8192];
+    loop {
+        {
+            // SAFETY: `buf` is valid for `buf.len()` bytes; the socket is ours.
+            let n = unsafe { ffi::recv(fd, buf.as_mut_ptr() as *mut c_void, buf.len(), 0) };
+            if n < 0 {
+                match ffi::errno() {
+                    ffi::EINTR => continue,
+                    // Drained, or the buffer overflowed (ENOBUFS): in the
+                    // latter case we may have missed events, so rescan.
+                    ffi::EAGAIN => break,
+                    _ => {
+                        interesting = true;
+                        break;
+                    }
+                }
+            }
+            if is_usb_device_uevent(&buf[..n as usize]) {
+                interesting = true;
+            }
+        }
+    }
+    interesting
+}
+
+/// Opens the kernel uevent netlink socket.
+#[cfg(feature = "hotplug")]
+fn uevent_socket() -> Result<OwnedFd> {
+    // SAFETY: a plain socket(2) call.
+    let fd = unsafe { ffi::socket(ffi::AF_NETLINK, ffi::SOCK_RAW, ffi::NETLINK_KOBJECT_UEVENT) };
+    if fd < 0 {
+        return Err(os_error("open netlink socket"));
+    }
+    // SAFETY: `fd` is a fresh descriptor that nothing else owns yet.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    ffi::set_cloexec(fd.as_raw_fd())?;
+    ffi::set_nonblocking(fd.as_raw_fd())?;
+    let addr = ffi::sockaddr_nl {
+        nl_family: ffi::AF_NETLINK as u16,
+        nl_pad: 0,
+        // A zero pid asks the kernel to allocate one, so several contexts (or
+        // several libraries in one process) can listen at the same time.
+        nl_pid: 0,
+        nl_groups: ffi::UEVENT_GROUP_KERNEL,
+    };
+    // SAFETY: `addr` is a valid sockaddr_nl of the declared length.
+    let r = unsafe {
+        ffi::bind(
+            fd.as_raw_fd(),
+            &addr as *const ffi::sockaddr_nl as *const c_void,
+            std::mem::size_of::<ffi::sockaddr_nl>() as u32,
+        )
+    };
+    if r < 0 {
+        return Err(os_error("bind netlink socket"));
+    }
+    Ok(fd)
+}
+
+/// Recognises a kernel uevent announcing a whole USB device arriving or
+/// leaving. Interface-level events (a driver binding, say) are ignored: they
+/// do not change the set of attached devices.
+#[cfg(feature = "hotplug")]
+fn is_usb_device_uevent(message: &[u8]) -> bool {
+    // A kernel uevent is "action@devpath\0" followed by KEY=VALUE\0 pairs.
+    let mut action = false;
+    let mut subsystem = false;
+    let mut devtype = false;
+    for field in message.split(|&b| b == 0) {
+        if let Some(v) = field.strip_prefix(b"ACTION=") {
+            action = v == b"add" || v == b"remove";
+        } else if let Some(v) = field.strip_prefix(b"SUBSYSTEM=") {
+            subsystem = v == b"usb";
+        } else if let Some(v) = field.strip_prefix(b"DEVTYPE=") {
+            devtype = v == b"usb_device";
+        }
+    }
+    action && subsystem && devtype
 }
 
 // ----- enumeration ---------------------------------------------------------------
@@ -789,5 +942,88 @@ impl Submission {
             iso_results,
             iso_offsets,
         })
+    }
+}
+
+#[cfg(all(test, feature = "hotplug"))]
+mod hotplug_tests {
+    use super::is_usb_device_uevent;
+
+    /// Builds a kernel uevent: a summary line then NUL-separated properties,
+    /// exactly as observed on the wire from netlink group 1.
+    fn uevent(summary: &str, fields: &[&str]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(summary.as_bytes());
+        out.push(0);
+        for f in fields {
+            out.extend_from_slice(f.as_bytes());
+            out.push(0);
+        }
+        out
+    }
+
+    #[test]
+    fn device_arrival_and_departure_are_recognised() {
+        let add = uevent(
+            "add@/devices/pci0000:60/0000:74:00.0/usb7/7-5",
+            &[
+                "ACTION=add",
+                "DEVPATH=/devices/pci0000:60/0000:74:00.0/usb7/7-5",
+                "SUBSYSTEM=usb",
+                "DEVNAME=bus/usb/007/017",
+                "DEVTYPE=usb_device",
+                "PRODUCT=781/5567/100",
+                "TYPE=0/0/0",
+                "BUSNUM=007",
+                "DEVNUM=017",
+                "SEQNUM=9012",
+                "MAJOR=189",
+                "MINOR=784",
+            ],
+        );
+        assert!(is_usb_device_uevent(&add));
+
+        let remove = uevent(
+            "remove@/devices/pci0000:60/0000:74:00.0/usb7/7-5",
+            &["ACTION=remove", "SUBSYSTEM=usb", "DEVTYPE=usb_device", "BUSNUM=007", "DEVNUM=017"],
+        );
+        assert!(is_usb_device_uevent(&remove));
+    }
+
+    #[test]
+    fn interface_and_foreign_events_are_ignored() {
+        // These five are what a kernel-driver detach/attach really emits;
+        // none of them changes the set of attached devices.
+        let cases = [
+            uevent("remove@/devices/.../hwmon/hwmon5", &["ACTION=remove", "SUBSYSTEM=hwmon"]),
+            uevent("unbind@/devices/.../0003:1B1C:1C27.0008", &["ACTION=unbind", "SUBSYSTEM=hid"]),
+            uevent(
+                "unbind@/devices/.../7-10.3:1.0",
+                &["ACTION=unbind", "SUBSYSTEM=usb", "DEVTYPE=usb_interface"],
+            ),
+            uevent(
+                "bind@/devices/.../7-10.3:1.0",
+                &["ACTION=bind", "SUBSYSTEM=usb", "DEVTYPE=usb_interface", "DRIVER=usbhid"],
+            ),
+            // A "change" on the device itself is not an arrival either.
+            uevent("change@/devices/.../7-5", &["ACTION=change", "SUBSYSTEM=usb", "DEVTYPE=usb_device"]),
+            // Same shape, different bus.
+            uevent(
+                "add@/devices/.../0000:2d:00.3",
+                &["ACTION=add", "SUBSYSTEM=pci", "DEVTYPE=pci_device"],
+            ),
+        ];
+        for (i, case) in cases.iter().enumerate() {
+            assert!(!is_usb_device_uevent(case), "case {i} should be ignored");
+        }
+    }
+
+    #[test]
+    fn truncated_and_empty_messages_are_safe() {
+        assert!(!is_usb_device_uevent(b""));
+        assert!(!is_usb_device_uevent(b"add@/devices/x"));
+        assert!(!is_usb_device_uevent(b"\0\0\0"));
+        // Properties split across the buffer boundary must not be trusted.
+        assert!(!is_usb_device_uevent(b"ACTION=add\0SUBSYSTEM=usb\0DEVTYPE=usb_dev"));
     }
 }

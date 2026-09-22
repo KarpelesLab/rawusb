@@ -10,6 +10,10 @@
 //!   `configs`, `active_config`).
 //! - `Handle`: configuration/interface operations, `submit`, `cancel`,
 //!   `cancel_all`.
+//! - `Context::watch_hotplug(&Arc<Self>, notify)` with the `hotplug` feature:
+//!   arranges for `notify()` to be called whenever the set of attached
+//!   devices may have changed. The neutral layer re-enumerates and diffs, so
+//!   a backend may over-notify but must never miss a change.
 //! - `TransferData`: per-transfer backend state, `Default`.
 //! - `errno_kind(code) -> ErrorKind`.
 
@@ -29,6 +33,21 @@ pub(crate) struct DeviceInfo {
     pub(crate) active_config: Option<u8>,
     /// Backend-specific locator used to open the device.
     pub(crate) location: Location,
+}
+
+/// Whether two enumeration snapshots describe the same attached device.
+///
+/// A device is identified by where it sits on the bus (its port chain) plus
+/// its address and its vendor/product pair. Unplugging a device and plugging
+/// a different one into the same port therefore reads as a departure and an
+/// arrival, but swapping two identical devices between two ports may not.
+#[cfg(feature = "hotplug")]
+pub(crate) fn same_device(a: &DeviceInfo, b: &DeviceInfo) -> bool {
+    a.bus_number == b.bus_number
+        && a.address == b.address
+        && a.port_numbers == b.port_numbers
+        && a.device_descriptor.vendor_id == b.device_descriptor.vendor_id
+        && a.device_descriptor.product_id == b.device_descriptor.product_id
 }
 
 /// Splits a concatenated run of configuration descriptors (as found in the

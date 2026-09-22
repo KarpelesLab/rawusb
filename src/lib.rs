@@ -52,6 +52,8 @@ pub mod descriptors;
 mod device;
 mod error;
 mod handle;
+#[cfg(feature = "hotplug")]
+pub mod hotplug;
 mod sys;
 pub mod transfer;
 pub mod types;
@@ -61,6 +63,8 @@ pub use descriptors::{ConfigDescriptor, DeviceDescriptor, EndpointDescriptor, In
 pub use device::Device;
 pub use error::{Error, ErrorKind, Result};
 pub use handle::DeviceHandle;
+#[cfg(feature = "hotplug")]
+pub use hotplug::{HotplugEvent, HotplugRegistration, HotplugWatcher};
 pub use transfer::{Transfer, TransferFlags};
 pub use types::{
     ControlSetup, ControlType, Direction, IsoPacket, NO_TIMEOUT, Recipient, Speed, TransferStatus, TransferType, Version, request_type,

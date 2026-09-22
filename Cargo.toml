@@ -11,6 +11,8 @@ categories = ["hardware-support", "os", "api-bindings"]
 exclude = [".github", "SECURITY.md"]
 
 [package.metadata.docs.rs]
+# Hotplug is opt-in; document it anyway.
+all-features = true
 targets = [
     "x86_64-unknown-linux-gnu",
     "x86_64-pc-windows-msvc",
@@ -20,6 +22,18 @@ targets = [
 
 [lib]
 name = "rawusb"
+
+[features]
+default = []
+# Hotplug notifications: netlink uevents on Linux, `CM_Register_Notification`
+# on Windows, IOKit matching notifications on macOS. Opt-in because it adds a
+# second background thread per context (started only when a watcher is
+# actually registered) and, on Linux, a netlink socket.
+hotplug = []
+
+[[example]]
+name = "hotplug"
+required-features = ["hotplug"]
 
 [dependencies]
 
