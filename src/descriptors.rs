@@ -517,7 +517,7 @@ mod tests {
     // one class-specific descriptor on the first interface.
     fn sample_config() -> Vec<u8> {
         let mut v = vec![
-            9, 2, 0, 0, 2, 1, 0, 0xa0, 50, // config (total length patched below)
+            9, 2, 0, 0, 2, 1, 0, 0xe0, 50, // config (total length patched below)
             8, 0x0b, 0, 2, 2, 2, 1, 0, // IAD
             9, 4, 0, 0, 1, 2, 2, 1, 0, // interface 0 alt 0
             5, 0x24, 0x00, 0x10, 0x01, // CDC header (class specific)
