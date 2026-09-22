@@ -1,0 +1,34 @@
+[package]
+name = "rawusb"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Dependency-free, cross-platform USB device access in the spirit of libusb: enumeration, descriptors, synchronous and asynchronous transfers on Linux, macOS and Windows."
+repository = "https://github.com/KarpelesLab/rawusb"
+license = "MIT"
+keywords = ["usb", "libusb", "hardware", "device", "driver"]
+categories = ["hardware-support", "os", "api-bindings"]
+exclude = [".github", "SECURITY.md"]
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[lib]
+name = "rawusb"
+
+[dependencies]
+
+[lints.rust]
+missing_docs = "warn"
+unreachable_pub = "warn"
+# Every `unsafe` block in this crate is an OS call (ioctl, WinUSB, IOKit); it is
+# expected in `src/sys/` and reviewed there. Keep it visible everywhere else.
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
