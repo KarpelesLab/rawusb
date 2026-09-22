@@ -9,16 +9,18 @@
 
 mod ffi;
 
+#[cfg(feature = "hotplug")]
+use super::Notifier;
 use super::{DeviceInfo, split_config_descriptors};
 use crate::descriptors::{ConfigDescriptor, DeviceDescriptor};
 use crate::transfer::{Inner, State};
-use crate::types::{ControlSetup, Speed, TransferStatus, TransferType, Version, descriptor_type, request};
+use crate::types::{ControlSetup, IsoPacket, Speed, TransferStatus, TransferType, Version, descriptor_type, request};
 use crate::{Error, ErrorKind, Result};
 use ffi::*;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Instant;
 
 /// Maps a Win32 error code to an error kind.
@@ -75,6 +77,8 @@ const WAKE_KEY: usize = 1;
 pub(crate) struct Context {
     iocp: Arc<OwnedHandle>,
     handles: Mutex<Vec<Weak<Handle>>>,
+    #[cfg(feature = "hotplug")]
+    hotplug: Mutex<Option<Hotplug>>,
     /// Transfers completed synchronously (hub descriptor requests) that must
     /// be reported from the event thread.
     deferred: Mutex<Vec<(Arc<Inner>, TransferStatus, usize)>>,
@@ -91,6 +95,8 @@ impl Context {
         let ctx = Arc::new(Context {
             iocp: Arc::clone(&iocp),
             handles: Mutex::new(Vec::new()),
+            #[cfg(feature = "hotplug")]
+            hotplug: Mutex::new(None),
             deferred: Mutex::new(Vec::new()),
         });
         let weak = Arc::downgrade(&ctx);
@@ -115,6 +121,49 @@ impl Context {
         enumerate()
     }
 
+    /// Starts reporting device changes through `notify`.
+    ///
+    /// `CM_Register_Notification` calls back on a thread-pool thread, which
+    /// only ever sets a flag here, so there is no extra thread to run.
+    #[cfg(feature = "hotplug")]
+    pub(crate) fn watch_hotplug(self: &Arc<Self>, notify: Notifier) -> Result<()> {
+        let mut slot = lock(&self.hotplug);
+        if slot.is_some() {
+            return Ok(());
+        }
+        let api = cm_notify_api().ok_or_else(|| {
+            Error::with_message(
+                ErrorKind::NotSupported,
+                "hotplug needs CM_Register_Notification, which arrives with Windows 10 1709",
+            )
+        })?;
+        let mut filter: CM_NOTIFY_FILTER = CM_NOTIFY_FILTER {
+            cbSize: std::mem::size_of::<CM_NOTIFY_FILTER>() as DWORD,
+            Flags: 0,
+            FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+            Reserved: 0,
+            u: CM_NOTIFY_FILTER_UNION {
+                DeviceInterface: CM_NOTIFY_FILTER_DEVICEINTERFACE {
+                    ClassGuid: GUID_DEVINTERFACE_USB_DEVICE,
+                },
+            },
+        };
+        // The callback needs the notifier for as long as it can fire; the box
+        // is reclaimed once the registration is cancelled.
+        let refcon = Box::into_raw(Box::new(notify));
+        let mut handle: HCMNOTIFICATION = std::ptr::null_mut();
+        // SAFETY: valid filter, context and out-pointer; the callback has the
+        // signature the API expects.
+        let cr = unsafe { (api.register)(&mut filter, refcon as *mut c_void, hotplug_callback, &mut handle) };
+        if cr != CR_SUCCESS {
+            // SAFETY: nothing was registered, so nothing can reach the box.
+            drop(unsafe { Box::from_raw(refcon) });
+            return Err(Error::with_message(ErrorKind::Other, "CM_Register_Notification failed"));
+        }
+        *slot = Some(Hotplug { handle, refcon });
+        Ok(())
+    }
+
     pub(crate) fn open(self: &Arc<Self>, dev: &Arc<DeviceInfo>) -> Result<Arc<Handle>> {
         let cfg = dev
             .active_config
@@ -134,6 +183,7 @@ impl Context {
             functions: Mutex::new(HashMap::new()),
             claimed: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            iso_inflight: Mutex::new(HashMap::new()),
             disconnected: AtomicBool::new(false),
         });
         lock(&self.handles).push(Arc::downgrade(&handle));
@@ -147,11 +197,17 @@ impl Drop for Context {
     }
 }
 
-/// Heap block handed to the kernel with each overlapped request.
+/// Heap block handed to the kernel with each overlapped request. The
+/// `OVERLAPPED` must stay first: the completion port hands back a pointer to
+/// it, which we cast back to this structure.
 #[repr(C)]
 struct OvEntry {
     ov: OVERLAPPED,
     inner: Arc<Inner>,
+    /// Per-packet results of an isochronous read, written by the driver.
+    iso_descs: Vec<USBD_ISO_PACKET_DESCRIPTOR>,
+    /// Keeps the isochronous buffer registered until the transfer completes.
+    iso_buffer: Option<IsochBuffer>,
 }
 
 fn event_loop(ctx: Weak<Context>, iocp: Arc<OwnedHandle>) {
@@ -191,7 +247,8 @@ fn event_loop(ctx: Weak<Context>, iocp: Arc<OwnedHandle>) {
             // field of a leaked `Box<OvEntry>`, recovered exactly once here.
             let entry = unsafe { Box::from_raw(ov as *mut OvEntry) };
             let inner = Arc::clone(&entry.inner);
-            inner.handle.finish(&inner, ov as usize, bytes as usize, err);
+            inner.handle.finish(&inner, ov as usize, bytes as usize, err, &entry.iso_descs);
+            // Dropping the entry also unregisters any isochronous buffer.
             drop(entry);
         } else if ok == FALSE && err != WAIT_TIMEOUT {
             // The port is gone.
@@ -203,6 +260,87 @@ fn event_loop(ctx: Weak<Context>, iocp: Arc<OwnedHandle>) {
             h.expire(now);
         }
     }
+}
+
+// ----- hotplug -------------------------------------------------------------------------
+
+/// `CM_Register_Notification`.
+#[cfg(feature = "hotplug")]
+type CmRegisterFn = unsafe extern "system" fn(*mut CM_NOTIFY_FILTER, *mut c_void, CM_NOTIFY_CALLBACK, *mut HCMNOTIFICATION) -> CONFIGRET;
+/// `CM_Unregister_Notification`.
+#[cfg(feature = "hotplug")]
+type CmUnregisterFn = unsafe extern "system" fn(HCMNOTIFICATION) -> CONFIGRET;
+
+/// The two `cfgmgr32` entry points, resolved at run time.
+#[cfg(feature = "hotplug")]
+struct CmNotifyApi {
+    register: CmRegisterFn,
+    unregister: CmUnregisterFn,
+}
+
+#[cfg(feature = "hotplug")]
+fn cm_notify_api() -> Option<&'static CmNotifyApi> {
+    static API: OnceLock<Option<CmNotifyApi>> = OnceLock::new();
+    API.get_or_init(|| {
+        let register = proc_address("cfgmgr32.dll", b"CM_Register_Notification\0")?;
+        let unregister = proc_address("cfgmgr32.dll", b"CM_Unregister_Notification\0")?;
+        // SAFETY: these are the documented signatures of the two exports.
+        unsafe {
+            Some(CmNotifyApi {
+                register: std::mem::transmute::<*const c_void, CmRegisterFn>(register),
+                unregister: std::mem::transmute::<*const c_void, CmUnregisterFn>(unregister),
+            })
+        }
+    })
+    .as_ref()
+}
+
+/// A live `CM_Register_Notification` registration owned by a context.
+#[cfg(feature = "hotplug")]
+struct Hotplug {
+    handle: HCMNOTIFICATION,
+    refcon: *mut Notifier,
+}
+
+// SAFETY: the handle is only passed back to cfgmgr32, and the box behind
+// `refcon` is immutable once installed.
+#[cfg(feature = "hotplug")]
+unsafe impl Send for Hotplug {}
+// SAFETY: as above.
+#[cfg(feature = "hotplug")]
+unsafe impl Sync for Hotplug {}
+
+#[cfg(feature = "hotplug")]
+impl Drop for Hotplug {
+    fn drop(&mut self) {
+        if let Some(api) = cm_notify_api() {
+            // SAFETY: `CM_Unregister_Notification` waits for any callback in
+            // flight to return, so the notifier box is unreachable afterwards.
+            unsafe {
+                (api.unregister)(self.handle);
+                drop(Box::from_raw(self.refcon));
+            }
+        }
+    }
+}
+
+/// Runs on a system thread-pool thread when a USB device interface appears or
+/// disappears.
+#[cfg(feature = "hotplug")]
+unsafe extern "system" fn hotplug_callback(
+    _notification: HCMNOTIFICATION,
+    context: *mut c_void,
+    action: DWORD,
+    _event_data: *mut c_void,
+    _event_data_size: DWORD,
+) -> DWORD {
+    if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL || action == CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL {
+        // SAFETY: `context` is the boxed notifier installed by
+        // `watch_hotplug`, freed only after this registration is cancelled.
+        let notify = unsafe { &*(context as *const Notifier) };
+        notify();
+    }
+    ERROR_SUCCESS
 }
 
 // ----- enumeration ---------------------------------------------------------------------
@@ -740,6 +878,79 @@ fn describe_device(roots: &[RootHub], path: String, devinst: DEVINST) -> Option<
     })
 }
 
+// ----- isochronous transfers ---------------------------------------------------------------
+
+/// The WinUSB isochronous entry points, resolved at run time because they
+/// only exist from Windows 8.1 onwards.
+/// `WinUsb_RegisterIsochBuffer`.
+type IsochRegisterFn = unsafe extern "system" fn(WINUSB_INTERFACE_HANDLE, u8, *mut u8, u32, *mut WINUSB_ISOCH_BUFFER_HANDLE) -> BOOL;
+/// `WinUsb_UnregisterIsochBuffer`.
+type IsochUnregisterFn = unsafe extern "system" fn(WINUSB_ISOCH_BUFFER_HANDLE) -> BOOL;
+/// `WinUsb_ReadIsochPipeAsap`.
+type IsochReadFn =
+    unsafe extern "system" fn(WINUSB_ISOCH_BUFFER_HANDLE, u32, u32, BOOL, u32, *mut USBD_ISO_PACKET_DESCRIPTOR, *mut OVERLAPPED) -> BOOL;
+/// `WinUsb_WriteIsochPipeAsap`.
+type IsochWriteFn = unsafe extern "system" fn(WINUSB_ISOCH_BUFFER_HANDLE, u32, u32, BOOL, *mut OVERLAPPED) -> BOOL;
+
+struct IsochApi {
+    register: IsochRegisterFn,
+    unregister: IsochUnregisterFn,
+    read_asap: IsochReadFn,
+    write_asap: IsochWriteFn,
+}
+
+fn isoch_api() -> Option<&'static IsochApi> {
+    static API: OnceLock<Option<IsochApi>> = OnceLock::new();
+    API.get_or_init(|| {
+        let register = proc_address("winusb.dll", b"WinUsb_RegisterIsochBuffer\0")?;
+        let unregister = proc_address("winusb.dll", b"WinUsb_UnregisterIsochBuffer\0")?;
+        let read_asap = proc_address("winusb.dll", b"WinUsb_ReadIsochPipeAsap\0")?;
+        let write_asap = proc_address("winusb.dll", b"WinUsb_WriteIsochPipeAsap\0")?;
+        // SAFETY: these are the documented signatures of the four exports.
+        unsafe {
+            Some(IsochApi {
+                register: std::mem::transmute::<*const c_void, IsochRegisterFn>(register),
+                unregister: std::mem::transmute::<*const c_void, IsochUnregisterFn>(unregister),
+                read_asap: std::mem::transmute::<*const c_void, IsochReadFn>(read_asap),
+                write_asap: std::mem::transmute::<*const c_void, IsochWriteFn>(write_asap),
+            })
+        }
+    })
+    .as_ref()
+}
+
+/// A buffer registered with WinUSB for the duration of one submission.
+struct IsochBuffer {
+    handle: WINUSB_ISOCH_BUFFER_HANDLE,
+}
+
+// SAFETY: the handle is only ever passed back to WinUSB.
+unsafe impl Send for IsochBuffer {}
+
+impl Drop for IsochBuffer {
+    fn drop(&mut self) {
+        if let Some(api) = isoch_api() {
+            // SAFETY: the handle came from `WinUsb_RegisterIsochBuffer` and is
+            // released exactly once, after the transfer has completed.
+            unsafe { (api.unregister)(self.handle) };
+        }
+    }
+}
+
+/// Maps a `USBD_STATUS` to the per-packet status the caller sees.
+fn usbd_packet_status(status: u32) -> TransferStatus {
+    if usbd_success(status) {
+        return TransferStatus::Completed;
+    }
+    match status {
+        USBD_STATUS_STALL_PID => TransferStatus::Stall,
+        USBD_STATUS_DATA_OVERRUN | USBD_STATUS_BUFFER_OVERRUN => TransferStatus::Overflow,
+        USBD_STATUS_CANCELED => TransferStatus::Cancelled,
+        USBD_STATUS_DEV_NOT_RESPONDING | USBD_STATUS_DEVICE_GONE => TransferStatus::NoDevice,
+        _ => TransferStatus::Error,
+    }
+}
+
 // ----- WinUSB handles --------------------------------------------------------------------
 
 /// An opened WinUSB device file with its primary interface handle.
@@ -826,6 +1037,9 @@ pub(crate) struct Handle {
     claimed: Mutex<HashMap<u8, Claimed>>,
     /// Outstanding overlapped requests keyed by OVERLAPPED address.
     pending: Mutex<HashMap<usize, Arc<Inner>>>,
+    /// Isochronous transfers in flight per endpoint. A submission joins the
+    /// running stream when this is non-zero, and starts a new one otherwise.
+    iso_inflight: Mutex<HashMap<u8, u32>>,
     disconnected: AtomicBool,
 }
 
@@ -971,6 +1185,8 @@ impl Handle {
         if unsafe { WinUsb_ResetPipe(h, endpoint) } == FALSE {
             return Err(os_error("WinUsb_ResetPipe"));
         }
+        // Whatever isochronous stream was running on the pipe is over.
+        lock(&self.iso_inflight).remove(&endpoint);
         Ok(())
     }
 
@@ -1019,6 +1235,8 @@ impl Handle {
             // SAFETY: OVERLAPPED is POD; zero is its idle state.
             ov: unsafe { std::mem::zeroed() },
             inner: Arc::clone(inner),
+            iso_descs: Vec::new(),
+            iso_buffer: None,
         });
         let entry = Box::into_raw(entry);
         let ov = entry as *mut OVERLAPPED;
@@ -1071,12 +1289,23 @@ impl Handle {
                 (dev.file.0, ok)
             }
             TransferType::Isochronous => {
-                // SAFETY: nothing submitted yet.
-                drop(unsafe { Box::from_raw(entry) });
-                return Err(Error::with_message(
-                    ErrorKind::NotSupported,
-                    "isochronous transfers are not supported on Windows yet",
-                ));
+                let prepared = match isoch_api() {
+                    Some(api) => self.prepare_isochronous(api, inner, st, buf_ptr, buf_len, entry, ov),
+                    None => Err(Error::with_message(
+                        ErrorKind::NotSupported,
+                        "isochronous transfers need the WinUSB isoch API, which arrives with Windows 8.1",
+                    )),
+                };
+                match prepared {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        // SAFETY: nothing was submitted, so the kernel never
+                        // saw `ov`; dropping the box also unregisters the
+                        // isochronous buffer if one was registered.
+                        drop(unsafe { Box::from_raw(entry) });
+                        return Err(e);
+                    }
+                }
             }
         };
 
@@ -1101,6 +1330,106 @@ impl Handle {
         drop(sub);
         self.ctx.wake();
         Ok(())
+    }
+
+    /// `wMaxPacketSize` of an endpoint in the alternate setting currently
+    /// selected on the interface that owns it.
+    fn endpoint_max_packet(&self, address: u8) -> Result<u32> {
+        let cfg = self
+            .cfg
+            .as_ref()
+            .ok_or_else(|| Error::with_message(ErrorKind::NotFound, "no configuration descriptor"))?;
+        let claimed = lock(&self.claimed);
+        for (number, c) in claimed.iter() {
+            if let Some(interface) = cfg.interface(*number)
+                && let Some(alt) = interface.alt_setting(c.alt)
+                && let Some(endpoint) = alt.endpoint(address)
+            {
+                return Ok(endpoint.max_packet_size());
+            }
+        }
+        Err(Error::with_message(
+            ErrorKind::NotFound,
+            "endpoint does not belong to a claimed interface",
+        ))
+    }
+
+    /// Validates the packet layout, registers the buffer and starts one
+    /// isochronous transfer. On success the caller owns the submission, and
+    /// `entry` owns the registration until the transfer completes.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_isochronous(
+        &self,
+        api: &'static IsochApi,
+        inner: &Arc<Inner>,
+        st: &State,
+        buf_ptr: *mut u8,
+        buf_len: usize,
+        entry: *mut OvEntry,
+        ov: *mut OVERLAPPED,
+    ) -> Result<(HANDLE, BOOL)> {
+        let endpoint = inner.endpoint;
+        let is_in = endpoint & 0x80 != 0;
+        let (dev, interface) = self.pipe_owner(endpoint)?;
+        let max_packet = self.endpoint_max_packet(endpoint)?;
+        let packets = &st.iso_packets;
+
+        // WinUSB slices the buffer itself, at the endpoint's packet size,
+        // rather than following a caller-supplied packet table.
+        for (i, packet) in packets.iter().enumerate() {
+            let last = i + 1 == packets.len();
+            let acceptable = packet.length == max_packet || (!is_in && last && packet.length <= max_packet);
+            if !acceptable {
+                return Err(Error::with_message(
+                    ErrorKind::InvalidParam,
+                    "WinUSB splits isochronous transfers at the endpoint's packet size: every packet must be exactly that long, except the last packet of an OUT transfer, which may be shorter",
+                ));
+            }
+        }
+        let total: usize = packets.iter().map(|p| p.length as usize).sum();
+        if total > buf_len {
+            return Err(Error::with_message(
+                ErrorKind::InvalidParam,
+                "isochronous packets do not fit the buffer",
+            ));
+        }
+
+        let mut handle: WINUSB_ISOCH_BUFFER_HANDLE = std::ptr::null_mut();
+        // SAFETY: the buffer is valid for `buf_len` bytes and stays put until
+        // the transfer completes, which is also when it is unregistered.
+        if unsafe { (api.register)(interface, endpoint, buf_ptr, buf_len as u32, &mut handle) } == FALSE {
+            return Err(os_error("WinUsb_RegisterIsochBuffer"));
+        }
+        // SAFETY: `entry` is our own allocation; the kernel has not seen it yet.
+        let descriptors = unsafe {
+            (*entry).iso_buffer = Some(IsochBuffer { handle });
+            if is_in {
+                (*entry).iso_descs = vec![USBD_ISO_PACKET_DESCRIPTOR::default(); packets.len()];
+            }
+            (*entry).iso_descs.as_mut_ptr()
+        };
+
+        // Joining the stream already running on this endpoint keeps the
+        // packets contiguous; with nothing in flight, start a fresh one.
+        let mut inflight = lock(&self.iso_inflight);
+        let continue_stream = if inflight.get(&endpoint).is_some_and(|&n| n > 0) {
+            TRUE
+        } else {
+            FALSE
+        };
+        // SAFETY: valid registration, buffer range and `OVERLAPPED`; for a
+        // read the descriptor array holds one entry per packet.
+        let ok = unsafe {
+            if is_in {
+                (api.read_asap)(handle, 0, total as u32, continue_stream, packets.len() as u32, descriptors, ov)
+            } else {
+                (api.write_asap)(handle, 0, total as u32, continue_stream, ov)
+            }
+        };
+        if ok != FALSE || last_error() == ERROR_IO_PENDING {
+            *inflight.entry(endpoint).or_insert(0) += 1;
+        }
+        Ok((dev.file.0, ok))
     }
 
     fn control_file(&self) -> HANDLE {
@@ -1180,7 +1509,7 @@ impl Handle {
         }
     }
 
-    fn finish(&self, inner: &Arc<Inner>, ov: usize, bytes: usize, err: DWORD) {
+    fn finish(&self, inner: &Arc<Inner>, ov: usize, bytes: usize, err: DWORD, iso_descs: &[USBD_ISO_PACKET_DESCRIPTOR]) {
         lock(&self.pending).remove(&ov);
         let Some(sub) = lock(&inner.sys.sub).take() else { return };
         let status = if sub.timed_out {
@@ -1201,7 +1530,57 @@ impl Handle {
                 _ => TransferStatus::Error,
             }
         };
+        if inner.kind == TransferType::Isochronous {
+            self.finish_isochronous(inner, status, bytes, iso_descs);
+            return;
+        }
         inner.complete(status, bytes, None);
+    }
+
+    /// Turns one completed isochronous submission into per-packet results.
+    fn finish_isochronous(&self, inner: &Arc<Inner>, status: TransferStatus, bytes: usize, iso_descs: &[USBD_ISO_PACKET_DESCRIPTOR]) {
+        {
+            let mut inflight = lock(&self.iso_inflight);
+            let remaining = inflight.entry(inner.endpoint).or_insert(0);
+            *remaining = remaining.saturating_sub(1);
+            if status != TransferStatus::Completed {
+                // The stream is broken; the next submission starts a new one.
+                *remaining = 0;
+            }
+        }
+        let requested: Vec<u32> = {
+            let state = inner.lock();
+            state.iso_packets.iter().map(|p| p.length).collect()
+        };
+        let mut packets = Vec::with_capacity(requested.len());
+        let actual = if iso_descs.is_empty() {
+            // An OUT transfer: WinUSB reports one total rather than a table,
+            // so spread it across the packets in order.
+            let mut remaining = bytes;
+            for &length in &requested {
+                let took = remaining.min(length as usize);
+                remaining -= took;
+                packets.push(IsoPacket {
+                    length,
+                    actual_length: took as u32,
+                    status,
+                });
+            }
+            bytes
+        } else {
+            let mut total = 0usize;
+            for (i, &length) in requested.iter().enumerate() {
+                let descriptor = iso_descs.get(i).copied().unwrap_or_default();
+                total += descriptor.Length as usize;
+                packets.push(IsoPacket {
+                    length,
+                    actual_length: descriptor.Length,
+                    status: usbd_packet_status(descriptor.Status),
+                });
+            }
+            total
+        };
+        inner.complete(status, actual, Some(packets));
     }
 }
 

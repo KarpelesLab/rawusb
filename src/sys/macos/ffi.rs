@@ -263,6 +263,17 @@ pub(crate) struct IOUSBInterfaceInterface182 {
     pub(crate) USBInterfaceGetStringIndex: unsafe extern "C" fn(This, *mut u8) -> IOReturn,
 }
 
+/// Opaque `IONotificationPortRef`.
+pub(crate) type IONotificationPortRef = *mut c_void;
+/// `void (*)(void *refcon, io_iterator_t iterator)`
+pub(crate) type IOServiceMatchingCallback = unsafe extern "C" fn(refcon: *mut c_void, iterator: io_iterator_t);
+
+/// Notification type strings from `IOKitKeys.h`. They are C macros, not
+/// exported symbols, so they are spelled out here.
+pub(crate) const kIOMatchedNotification: &std::ffi::CStr = c"IOServiceMatched";
+/// See [`kIOMatchedNotification`].
+pub(crate) const kIOTerminatedNotification: &std::ffi::CStr = c"IOServiceTerminate";
+
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     pub(crate) fn IOServiceMatching(name: *const c_char) -> CFMutableDictionaryRef;
@@ -278,6 +289,18 @@ unsafe extern "C" {
         entry: io_registry_entry_t,
         plane: *const c_char,
         child: *mut io_registry_entry_t,
+    ) -> kern_return_t;
+    pub(crate) fn IONotificationPortCreate(mainPort: mach_port_t) -> IONotificationPortRef;
+    pub(crate) fn IONotificationPortDestroy(notify: IONotificationPortRef);
+    pub(crate) fn IONotificationPortGetRunLoopSource(notify: IONotificationPortRef) -> CFRunLoopSourceRef;
+    /// Consumes one reference on `matching`.
+    pub(crate) fn IOServiceAddMatchingNotification(
+        notifyPort: IONotificationPortRef,
+        notificationType: *const c_char,
+        matching: CFDictionaryRef,
+        callback: IOServiceMatchingCallback,
+        refCon: *mut c_void,
+        notification: *mut io_iterator_t,
     ) -> kern_return_t;
     pub(crate) fn IOCreatePlugInInterfaceForService(
         service: io_service_t,

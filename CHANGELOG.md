@@ -19,4 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WinUSB transfers on an I/O completion port, composite-function support).
 - macOS backend (IOKit `IOUSBLib` device/interface objects, CFRunLoop event
   thread, kernel-side timeouts on the `182` interface revisions).
-- `list_devices` example and a self-skipping hardware test suite.
+- Optional `hotplug` feature: `Context::hotplug()` builds a filtered watcher
+  that reports devices arriving and leaving, either through a callback or a
+  queue, with `enumerate_existing` for a race-free start. Backed by netlink
+  uevents on Linux, `CM_Register_Notification` on Windows and IOKit matching
+  notifications on macOS.
+- Isochronous transfers on Windows, through the WinUSB isoch API (Windows
+  8.1 and newer), including per-packet results for IN transfers and seamless
+  stream continuation while transfers stay queued on an endpoint.
+- `list_devices` and `hotplug` examples, and a self-skipping hardware test
+  suite.

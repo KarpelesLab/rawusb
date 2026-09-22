@@ -36,16 +36,20 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
-      - name: Clippy (warnings denied)
+      - name: Clippy (all features, warnings denied)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # `hotplug` is opt-in, so the default build has to keep compiling too.
+      - name: Clippy (no default features)
         run: cargo clippy --all-targets -- -D warnings
 
       # Hosted runners have no USB devices; the hardware tests skip themselves
       # when enumeration comes back empty (or is denied).
-      - name: Test
-        run: cargo test
+      - name: Test (all features)
+        run: cargo test --all-features
 
       - name: Docs
-        run: cargo doc --no-deps
+        run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -55,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.89
-      - run: cargo check --all-targets
+      - run: cargo check --all-targets --all-features
 
   cross_check:
     name: Cross-compile check (${{ matrix.target }})
@@ -80,4 +84,4 @@ jobs:
         with:
           targets: ${{ matrix.target }}
           components: clippy
-      - run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
+      - run: cargo clippy --all-targets --all-features --target ${{ matrix.target }} -- -D warnings

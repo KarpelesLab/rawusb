@@ -19,6 +19,9 @@ crates, no C library to install, and no build script.
   wait for it, get a callback, or `.await` it from any async runtime.
   Isochronous transfers, multi-packet layouts, short-not-ok and
   zero-length-packet flags are all exposed.
+- **Hotplug notifications** (optional `hotplug` feature): learn when devices
+  arrive and leave, filtered by vendor, product or class, as a callback or a
+  queue you pull from.
 - One background event thread per [`Context`] drives completion, so callers
   never have to pump events.
 
@@ -52,6 +55,21 @@ fn main() -> rawusb::Result<()> {
 }
 ```
 
+Hotplug, with the `hotplug` feature enabled:
+
+```rust
+let ctx = rawusb::Context::new()?;
+// `enumerate_existing` reports what is already plugged in, so nothing is
+// missed between enumerating and starting to watch.
+let watcher = ctx.hotplug().vendor_id(0x046d).enumerate_existing(true).watch()?;
+for event in watcher.iter() {
+    match event {
+        rawusb::HotplugEvent::Arrived(dev) => println!("arrived: {dev:?}"),
+        rawusb::HotplugEvent::Left(dev) => println!("left: {dev:?}"),
+    }
+}
+```
+
 Asynchronous use, with the same transfer resubmitted from its callback:
 
 ```rust
@@ -77,7 +95,8 @@ t.submit()?;
 | Enumeration, descriptors | sysfs | SetupAPI + hub driver ioctls | IOKit registry |
 | I/O | usbfs URBs, `poll` | WinUSB, I/O completion port | `IOUSBLib`, CFRunLoop |
 | Control / bulk / interrupt | yes | yes | yes |
-| Isochronous | yes | not yet | yes (experimental) |
+| Isochronous | yes | yes (Windows 8.1+) | yes (experimental) |
+| Hotplug (`hotplug` feature) | netlink uevents | `CM_Register_Notification` (Windows 10 1709+) | IOKit notifications |
 | Kernel driver detach | yes | n/a (WinUSB only) | not possible |
 | Device reset | yes | not supported by WinUSB | yes |
 | Set configuration | yes | only the current one | yes |
@@ -94,6 +113,12 @@ INF file.
 owns (HID, mass storage, CDC, ...) fails with `ErrorKind::Access`, as it does
 with libusb. Descriptor requests still work on such devices.
 
+**Isochronous transfers** are portable as long as every packet is exactly the
+endpoint's maximum packet size: WinUSB slices the buffer itself at that size
+rather than following a packet table, and rejects any other layout (the last
+packet of an OUT transfer may be shorter). Linux and macOS accept arbitrary
+per-packet lengths.
+
 ## Status
 
 Pre-1.0. The Linux backend is exercised against real hardware in the test
@@ -101,7 +126,8 @@ suite (`tests/hardware.rs`, which skips itself when no suitable device is
 nominated through the environment). The Windows and macOS backends are
 compiled on every target in CI and follow libusb's proven call sequences,
 but have had less real-device time; bug reports with the failing call are
-welcome. Hotplug notification is not implemented yet.
+welcome. The Linux hotplug backend is exercised against real kernel uevents;
+the Windows and macOS ones are compile-checked only.
 
 ## License
 

@@ -142,6 +142,50 @@ pub(crate) const KEY_READ: DWORD = 0x2_0019;
 pub(crate) const REG_SZ: DWORD = 1;
 pub(crate) const REG_MULTI_SZ: DWORD = 7;
 
+/// Opaque `HCMNOTIFICATION`.
+pub(crate) type HCMNOTIFICATION = *mut c_void;
+
+pub(crate) const CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE: DWORD = 0;
+pub(crate) const CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL: DWORD = 0;
+pub(crate) const CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL: DWORD = 1;
+
+/// The `u` member of `CM_NOTIFY_FILTER`. `DeviceInstance` is the largest arm
+/// (`MAX_DEVICE_ID_LEN` wide characters), which is what fixes the size of the
+/// structure the API validates against `cbSize`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union CM_NOTIFY_FILTER_UNION {
+    pub(crate) DeviceInterface: CM_NOTIFY_FILTER_DEVICEINTERFACE,
+    pub(crate) DeviceHandle: HANDLE,
+    pub(crate) DeviceInstance: [u16; 200],
+}
+
+/// The `DeviceInterface` arm of [`CM_NOTIFY_FILTER_UNION`].
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct CM_NOTIFY_FILTER_DEVICEINTERFACE {
+    pub(crate) ClassGuid: GUID,
+}
+
+/// `CM_NOTIFY_FILTER`.
+#[repr(C)]
+pub(crate) struct CM_NOTIFY_FILTER {
+    pub(crate) cbSize: DWORD,
+    pub(crate) Flags: DWORD,
+    pub(crate) FilterType: DWORD,
+    pub(crate) Reserved: DWORD,
+    pub(crate) u: CM_NOTIFY_FILTER_UNION,
+}
+
+/// `PCM_NOTIFY_CALLBACK`.
+pub(crate) type CM_NOTIFY_CALLBACK = unsafe extern "system" fn(
+    hNotify: HCMNOTIFICATION,
+    Context: *mut c_void,
+    Action: DWORD,
+    EventData: *mut c_void,
+    EventDataSize: DWORD,
+) -> DWORD;
+
 pub(crate) const CR_SUCCESS: CONFIGRET = 0;
 pub(crate) const CR_BUFFER_SMALL: CONFIGRET = 0x1A;
 pub(crate) const CM_GET_DEVICE_INTERFACE_LIST_PRESENT: DWORD = 0;
@@ -211,6 +255,33 @@ pub(crate) struct WINUSB_SETUP_PACKET {
     pub(crate) Length: u16,
 }
 
+/// Opaque handle to a buffer registered for isochronous transfers.
+pub(crate) type WINUSB_ISOCH_BUFFER_HANDLE = *mut c_void;
+
+/// `USBD_ISO_PACKET_DESCRIPTOR`: one packet's slot in an isochronous buffer.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct USBD_ISO_PACKET_DESCRIPTOR {
+    /// Offset of the packet data from the start of the registered buffer.
+    pub(crate) Offset: u32,
+    /// Bytes transferred, filled in by the driver.
+    pub(crate) Length: u32,
+    /// `USBD_STATUS` for this packet.
+    pub(crate) Status: u32,
+}
+
+/// `USBD_SUCCESS(s)`: the top nibble carries the severity.
+pub(crate) const fn usbd_success(status: u32) -> bool {
+    status >> 28 == 0
+}
+
+pub(crate) const USBD_STATUS_STALL_PID: u32 = 0xC000_0004;
+pub(crate) const USBD_STATUS_DEV_NOT_RESPONDING: u32 = 0xC000_0001;
+pub(crate) const USBD_STATUS_DATA_OVERRUN: u32 = 0xC000_0008;
+pub(crate) const USBD_STATUS_BUFFER_OVERRUN: u32 = 0xC000_3003;
+pub(crate) const USBD_STATUS_CANCELED: u32 = 0xC001_0000;
+pub(crate) const USBD_STATUS_DEVICE_GONE: u32 = 0xC000_1000;
+
 pub(crate) const SHORT_PACKET_TERMINATE: DWORD = 0x01;
 pub(crate) const AUTO_CLEAR_STALL: DWORD = 0x02;
 pub(crate) const PIPE_TRANSFER_TIMEOUT: DWORD = 0x03;
@@ -263,6 +334,28 @@ unsafe extern "system" {
         lpOverlapped: *mut OVERLAPPED,
     ) -> BOOL;
     pub(crate) fn CancelIoEx(hFile: HANDLE, lpOverlapped: *mut OVERLAPPED) -> BOOL;
+    pub(crate) fn GetModuleHandleW(lpModuleName: *const u16) -> HANDLE;
+    pub(crate) fn GetProcAddress(hModule: HANDLE, lpProcName: *const u8) -> *const c_void;
+}
+
+/// Looks up an exported function in a DLL that is already loaded.
+///
+/// Used for entry points that do not exist on every supported Windows
+/// version: importing those statically would stop the whole process from
+/// loading on an older system, whereas resolving them here simply reports
+/// the feature as unsupported. `symbol` must be NUL-terminated.
+pub(crate) fn proc_address(module: &str, symbol: &[u8]) -> Option<*const c_void> {
+    debug_assert_eq!(symbol.last(), Some(&0), "symbol name must be NUL-terminated");
+    let module = wide(module);
+    // SAFETY: both strings are NUL-terminated and outlive the calls.
+    unsafe {
+        let handle = GetModuleHandleW(module.as_ptr());
+        if handle.is_null() {
+            return None;
+        }
+        let address = GetProcAddress(handle, symbol.as_ptr());
+        if address.is_null() { None } else { Some(address) }
+    }
 }
 
 #[link(name = "setupapi")]

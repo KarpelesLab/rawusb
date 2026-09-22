@@ -41,6 +41,11 @@ pub(crate) struct DeviceInfo {
 /// its address and its vendor/product pair. Unplugging a device and plugging
 /// a different one into the same port therefore reads as a departure and an
 /// arrival, but swapping two identical devices between two ports may not.
+/// Callback the neutral layer installs so a backend can report that the set
+/// of attached devices may have changed.
+#[cfg(feature = "hotplug")]
+pub(crate) type Notifier = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 #[cfg(feature = "hotplug")]
 pub(crate) fn same_device(a: &DeviceInfo, b: &DeviceInfo) -> bool {
     a.bus_number == b.bus_number

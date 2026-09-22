@@ -8,6 +8,8 @@
 mod ffi;
 mod usbfs;
 
+#[cfg(feature = "hotplug")]
+use super::Notifier;
 use super::{DeviceInfo, split_config_descriptors};
 use crate::descriptors::DeviceDescriptor;
 use crate::transfer::{Inner, State};
@@ -264,10 +266,6 @@ fn event_loop(ctx: Weak<Context>, mut reader: PipeReader) {
 
 /// The netlink socket a context listens on, with the callback to fire when it
 /// says something interesting.
-/// Callback the neutral layer installs to hear about device changes.
-#[cfg(feature = "hotplug")]
-pub(crate) type Notifier = Arc<dyn Fn() + Send + Sync>;
-
 /// What the event thread needs to service the netlink socket for one pass.
 #[cfg(feature = "hotplug")]
 type HotplugPass = (Arc<OwnedFd>, Notifier);

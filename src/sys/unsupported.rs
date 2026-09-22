@@ -25,6 +25,11 @@ impl Context {
     pub(crate) fn open(&self, _dev: &Arc<DeviceInfo>) -> Result<Arc<Handle>> {
         Err(Error::new(ErrorKind::NotSupported))
     }
+
+    #[cfg(feature = "hotplug")]
+    pub(crate) fn watch_hotplug(self: &Arc<Self>, _notify: super::Notifier) -> Result<()> {
+        Err(Error::new(ErrorKind::NotSupported))
+    }
 }
 
 pub(crate) struct Handle;

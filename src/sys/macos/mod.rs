@@ -14,6 +14,8 @@
 mod ffi;
 
 use super::DeviceInfo;
+#[cfg(feature = "hotplug")]
+use super::Notifier;
 use crate::descriptors::DeviceDescriptor;
 use crate::transfer::{Inner, State};
 use crate::types::{ControlSetup, IsoPacket, Speed, TransferStatus, TransferType, Version, descriptor_type, request};
@@ -237,6 +239,8 @@ pub(crate) struct Location {
 pub(crate) struct Context {
     rl: CFRunLoopRef,
     handles: Mutex<Vec<Weak<Handle>>>,
+    #[cfg(feature = "hotplug")]
+    hotplug: Mutex<Option<Hotplug>>,
     /// Device objects by registry entry ID, so that repeated enumeration and
     /// several handles share one exclusive open.
     cache: Mutex<HashMap<u64, Weak<DeviceRef>>>,
@@ -264,6 +268,8 @@ impl Context {
         let ctx = Arc::new(Context {
             rl,
             handles: Mutex::new(Vec::new()),
+            #[cfg(feature = "hotplug")]
+            hotplug: Mutex::new(None),
             cache: Mutex::new(HashMap::new()),
         });
         *lock(&ctx_slot) = Some(Arc::downgrade(&ctx));
@@ -273,6 +279,73 @@ impl Context {
     fn wake(&self) {
         // SAFETY: CFRunLoopStop may be called from any thread.
         unsafe { CFRunLoopStop(self.rl) };
+    }
+
+    /// Starts reporting device changes through `notify`.
+    ///
+    /// IOKit delivers matched/terminated notifications on the run loop this
+    /// context already owns, so no extra thread is needed here.
+    #[cfg(feature = "hotplug")]
+    pub(crate) fn watch_hotplug(self: &Arc<Self>, notify: Notifier) -> Result<()> {
+        let mut slot = lock(&self.hotplug);
+        if slot.is_some() {
+            return Ok(());
+        }
+        // SAFETY: creating a notification port on the default main port.
+        let port = unsafe { IONotificationPortCreate(kIOMasterPortDefault) };
+        if port.is_null() {
+            return Err(Error::with_message(ErrorKind::Other, "IONotificationPortCreate failed"));
+        }
+        // SAFETY: the port is live; the source it owns is valid until the
+        // port is destroyed, which `Hotplug::drop` does after removing it.
+        let source = unsafe { IONotificationPortGetRunLoopSource(port) };
+        // SAFETY: CFRunLoop APIs are thread-safe.
+        unsafe { CFRunLoopAddSource(self.rl, source, run_loop_mode()) };
+
+        // The callback needs the notifier for as long as it can fire; the box
+        // is reclaimed once the port is destroyed.
+        let refcon = Box::into_raw(Box::new(notify));
+        let mut iterators = Vec::new();
+        for class in [c"IOUSBHostDevice", c"IOUSBDevice"] {
+            for kind in [kIOMatchedNotification, kIOTerminatedNotification] {
+                // SAFETY: a fresh matching dictionary per call, since
+                // IOServiceAddMatchingNotification consumes one reference.
+                let dict = unsafe { IOServiceMatching(class.as_ptr()) };
+                if dict.is_null() {
+                    continue;
+                }
+                let mut iter: io_iterator_t = 0;
+                // SAFETY: valid port, type string, dictionary and out-pointer.
+                let kr = unsafe {
+                    IOServiceAddMatchingNotification(port, kind.as_ptr(), dict, hotplug_callback, refcon as *mut c_void, &mut iter)
+                };
+                if kr == kIOReturnSuccess {
+                    // Draining the initial set arms the notification.
+                    drain_iterator(iter);
+                    iterators.push(iter);
+                }
+            }
+        }
+        if iterators.is_empty() {
+            // SAFETY: undoing exactly what was set up above.
+            unsafe {
+                CFRunLoopRemoveSource(self.rl, source, run_loop_mode());
+                IONotificationPortDestroy(port);
+                drop(Box::from_raw(refcon));
+            }
+            return Err(Error::with_message(ErrorKind::NotSupported, "no USB device class to watch"));
+        }
+        *slot = Some(Hotplug {
+            port,
+            source,
+            rl: self.rl,
+            iterators,
+            refcon,
+        });
+        drop(slot);
+        // Make the event thread notice the new run loop source.
+        self.wake();
+        Ok(())
     }
 
     pub(crate) fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
@@ -488,6 +561,69 @@ fn event_loop(slot: Arc<Mutex<Option<Weak<Context>>>>, tx: std::sync::mpsc::Send
     }
     // SAFETY: balancing the retain above.
     unsafe { CFRelease(rl) };
+}
+
+/// Releases everything an iterator still holds, which also re-arms the
+/// matching notification it belongs to.
+#[cfg(feature = "hotplug")]
+fn drain_iterator(iterator: io_iterator_t) {
+    loop {
+        // SAFETY: valid iterator; each service returned carries a reference
+        // that we hand straight back.
+        let service = unsafe { IOIteratorNext(iterator) };
+        if service == 0 {
+            break;
+        }
+        // SAFETY: as above.
+        unsafe { IOObjectRelease(service) };
+    }
+}
+
+/// Runs on the context's run loop thread whenever IOKit matches or terminates
+/// a USB device.
+#[cfg(feature = "hotplug")]
+unsafe extern "C" fn hotplug_callback(refcon: *mut c_void, iterator: io_iterator_t) {
+    drain_iterator(iterator);
+    // SAFETY: `refcon` is the boxed notifier installed by `watch_hotplug`,
+    // which outlives every callback because the box is only freed after
+    // `IONotificationPortDestroy`.
+    let notify = unsafe { &*(refcon as *const Notifier) };
+    notify();
+}
+
+/// IOKit notification registration owned by a context.
+#[cfg(feature = "hotplug")]
+struct Hotplug {
+    port: IONotificationPortRef,
+    source: CFRunLoopSourceRef,
+    rl: CFRunLoopRef,
+    iterators: Vec<io_iterator_t>,
+    refcon: *mut Notifier,
+}
+
+// SAFETY: the IOKit handles below are only touched through thread-safe calls,
+// and the box behind `refcon` is immutable once installed.
+#[cfg(feature = "hotplug")]
+unsafe impl Send for Hotplug {}
+// SAFETY: as above.
+#[cfg(feature = "hotplug")]
+unsafe impl Sync for Hotplug {}
+
+#[cfg(feature = "hotplug")]
+impl Drop for Hotplug {
+    fn drop(&mut self) {
+        // SAFETY: tearing down exactly what `watch_hotplug` created, in the
+        // reverse order. No callback can run once the port is destroyed, so
+        // the notifier box is free to go afterwards.
+        unsafe {
+            CFRunLoopRemoveSource(self.rl, self.source, run_loop_mode());
+            IONotificationPortDestroy(self.port);
+            for iterator in &self.iterators {
+                IOObjectRelease(*iterator);
+            }
+            drop(Box::from_raw(self.refcon));
+        }
+    }
 }
 
 fn matching_services(class: &CStr) -> Vec<io_service_t> {
