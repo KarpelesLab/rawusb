@@ -177,6 +177,12 @@ pub(crate) struct CM_NOTIFY_FILTER {
     pub(crate) u: CM_NOTIFY_FILTER_UNION,
 }
 
+// The API validates `cbSize` against its own idea of the structure, so the
+// layout has to match exactly: four DWORDs followed by a union whose largest
+// arm is `WCHAR InstanceId[MAX_DEVICE_ID_LEN]`, aligned to a pointer.
+const _: () = assert!(std::mem::size_of::<CM_NOTIFY_FILTER>() == 16 + 400);
+const _: () = assert!(std::mem::align_of::<CM_NOTIFY_FILTER>() == std::mem::align_of::<HANDLE>());
+
 /// `PCM_NOTIFY_CALLBACK`.
 pub(crate) type CM_NOTIFY_CALLBACK = unsafe extern "system" fn(
     hNotify: HCMNOTIFICATION,
@@ -270,6 +276,9 @@ pub(crate) struct USBD_ISO_PACKET_DESCRIPTOR {
     pub(crate) Status: u32,
 }
 
+// Three ULONGs, no padding: WinUSB fills an array of these in place.
+const _: () = assert!(std::mem::size_of::<USBD_ISO_PACKET_DESCRIPTOR>() == 12);
+
 /// `USBD_SUCCESS(s)`: the top nibble carries the severity.
 pub(crate) const fn usbd_success(status: u32) -> bool {
     status >> 28 == 0
@@ -281,6 +290,10 @@ pub(crate) const USBD_STATUS_DATA_OVERRUN: u32 = 0xC000_0008;
 pub(crate) const USBD_STATUS_BUFFER_OVERRUN: u32 = 0xC000_3003;
 pub(crate) const USBD_STATUS_CANCELED: u32 = 0xC001_0000;
 pub(crate) const USBD_STATUS_DEVICE_GONE: u32 = 0xC000_1000;
+
+// Passed by value to `WinUsb_ControlTransfer`; the wire layout of a USB
+// setup packet, with no padding between the fields.
+const _: () = assert!(std::mem::size_of::<WINUSB_SETUP_PACKET>() == 8);
 
 pub(crate) const SHORT_PACKET_TERMINATE: DWORD = 0x01;
 pub(crate) const AUTO_CLEAR_STALL: DWORD = 0x02;
