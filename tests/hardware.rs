@@ -54,6 +54,11 @@ fn enumerate_and_read_descriptors() {
         let d = dev.device_descriptor();
         assert!(d.num_configurations >= 1, "{dev:?} has no configurations");
         assert!(d.max_packet_size_0 > 0);
+        if dev.port_numbers().is_empty() {
+            // Root hubs: Windows synthesises them without configuration descriptors.
+            assert_eq!(d.class, rawusb::types::class::HUB);
+            continue;
+        }
         let cfg = dev.active_config_descriptor().unwrap();
         assert!(cfg.configuration_value >= 1);
         // Every endpoint must belong to a parsed interface, and the raw tree
@@ -62,10 +67,6 @@ fn enumerate_and_read_descriptors() {
             assert!(ep.number() <= 15);
         }
         assert_eq!(rawusb::ConfigDescriptor::from_bytes(cfg.raw()).unwrap(), cfg);
-        // Ports are consistent with the device's role.
-        if dev.port_numbers().is_empty() {
-            assert_eq!(dev.address(), 1, "only root hubs sit at address 1 with no ports");
-        }
     }
 }
 
@@ -74,6 +75,9 @@ fn open_and_read_strings() {
     let Some(ctx) = context() else { return };
     let mut opened = 0;
     for dev in devices(&ctx) {
+        if dev.port_numbers().is_empty() {
+            continue; // root hubs cannot serve requests on Windows
+        }
         let h = match dev.open() {
             Ok(h) => h,
             Err(e) if e.kind() == ErrorKind::Access => continue,
