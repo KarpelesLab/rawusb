@@ -147,6 +147,20 @@ fn watchers_and_contexts_shut_down_cleanly() {
 }
 
 #[test]
+fn two_sessions_can_watch_at_once() {
+    // Each context takes its own subscription from the OS; neither may lock
+    // the other out. On Linux this is what lets a process (or two libraries
+    // inside it) hold several netlink uevent sockets.
+    let Some(first) = context() else { return };
+    let Some(second) = context() else { return };
+    let Some(a) = watcher(&first, None) else { return };
+    let Some(b) = watcher(&second, None) else { return };
+    let (seen_a, seen_b) = (drain(&a).len(), drain(&b).len());
+    assert_eq!(seen_a, seen_b, "both sessions see the same devices");
+    assert_eq!(seen_a, first.devices().unwrap().len());
+}
+
+#[test]
 fn a_real_device_change_is_reported() {
     if std::env::var("RAWUSB_TEST_HOTPLUG").is_err() {
         return;
