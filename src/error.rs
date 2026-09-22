@@ -99,10 +99,7 @@ impl Error {
     }
 
     /// Creates an error of the given kind with a descriptive message.
-    pub fn with_message(
-        kind: ErrorKind,
-        message: impl Into<std::borrow::Cow<'static, str>>,
-    ) -> Self {
+    pub fn with_message(kind: ErrorKind, message: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         Error {
             kind,
             code: None,

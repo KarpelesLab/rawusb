@@ -45,16 +45,10 @@ impl DeviceDescriptor {
     /// Parses the descriptor from its wire encoding.
     pub fn from_bytes(b: &[u8]) -> Result<Self> {
         if b.len() < Self::SIZE {
-            return Err(Error::with_message(
-                ErrorKind::InvalidParam,
-                "device descriptor too short",
-            ));
+            return Err(Error::with_message(ErrorKind::InvalidParam, "device descriptor too short"));
         }
         if b[0] < Self::SIZE as u8 || b[1] != descriptor_type::DEVICE {
-            return Err(Error::with_message(
-                ErrorKind::InvalidParam,
-                "not a device descriptor",
-            ));
+            return Err(Error::with_message(ErrorKind::InvalidParam, "not a device descriptor"));
         }
         Ok(DeviceDescriptor {
             usb_version: Version(u16::from_le_bytes([b[2], b[3]])),
@@ -158,16 +152,10 @@ impl ConfigDescriptor {
     /// `wTotalLength` is ignored; a truncated tree is parsed as far as it goes.
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 9 {
-            return Err(Error::with_message(
-                ErrorKind::InvalidParam,
-                "config descriptor too short",
-            ));
+            return Err(Error::with_message(ErrorKind::InvalidParam, "config descriptor too short"));
         }
         if data[0] < 9 || data[1] != descriptor_type::CONFIG {
-            return Err(Error::with_message(
-                ErrorKind::InvalidParam,
-                "not a config descriptor",
-            ));
+            return Err(Error::with_message(ErrorKind::InvalidParam, "not a config descriptor"));
         }
         let total_length = u16::from_le_bytes([data[2], data[3]]);
         let end = (total_length as usize).clamp(9, data.len());
@@ -197,10 +185,10 @@ impl ConfigDescriptor {
             let d = &data[pos..pos + len];
             match ty {
                 descriptor_type::INTERFACE if len >= 9 => {
-                    if let Some(ep) = cur_ep.take() {
-                        if let Some(i) = cur_iface.as_mut() {
-                            i.endpoints.push(ep);
-                        }
+                    if let Some(ep) = cur_ep.take()
+                        && let Some(i) = cur_iface.as_mut()
+                    {
+                        i.endpoints.push(ep);
                     }
                     if let Some(i) = cur_iface.take() {
                         cfg.push_interface(i);
@@ -218,10 +206,10 @@ impl ConfigDescriptor {
                     });
                 }
                 descriptor_type::ENDPOINT if len >= 7 && cur_iface.is_some() => {
-                    if let Some(ep) = cur_ep.take() {
-                        if let Some(i) = cur_iface.as_mut() {
-                            i.endpoints.push(ep);
-                        }
+                    if let Some(ep) = cur_ep.take()
+                        && let Some(i) = cur_iface.as_mut()
+                    {
+                        i.endpoints.push(ep);
                     }
                     cur_ep = Some(EndpointDescriptor {
                         address: d[2],
@@ -258,10 +246,10 @@ impl ConfigDescriptor {
             }
             pos += len;
         }
-        if let Some(ep) = cur_ep.take() {
-            if let Some(i) = cur_iface.as_mut() {
-                i.endpoints.push(ep);
-            }
+        if let Some(ep) = cur_ep.take()
+            && let Some(i) = cur_iface.as_mut()
+        {
+            i.endpoints.push(ep);
         }
         if let Some(i) = cur_iface.take() {
             cfg.push_interface(i);
@@ -351,9 +339,7 @@ pub struct Interface {
 impl Interface {
     /// The alternate setting with the given `bAlternateSetting` value.
     pub fn alt_setting(&self, value: u8) -> Option<&InterfaceDescriptor> {
-        self.alt_settings
-            .iter()
-            .find(|a| a.alternate_setting == value)
+        self.alt_settings.iter().find(|a| a.alternate_setting == value)
     }
 
     /// The first listed alternate setting (normally alternate setting 0).
@@ -481,32 +467,20 @@ impl EndpointDescriptor {
 /// Malformed UTF-16 code units are replaced with U+FFFD.
 pub fn decode_string_descriptor(data: &[u8]) -> Result<String> {
     if data.len() < 2 || data[1] != descriptor_type::STRING {
-        return Err(Error::with_message(
-            ErrorKind::Io,
-            "not a string descriptor",
-        ));
+        return Err(Error::with_message(ErrorKind::Io, "not a string descriptor"));
     }
     let len = (data[0] as usize).min(data.len());
-    let units: Vec<u16> = data[2..len]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
+    let units: Vec<u16> = data[2..len].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
     Ok(String::from_utf16_lossy(&units))
 }
 
 /// Decodes the language ID table of string descriptor 0.
 pub fn decode_language_ids(data: &[u8]) -> Result<Vec<u16>> {
     if data.len() < 2 || data[1] != descriptor_type::STRING {
-        return Err(Error::with_message(
-            ErrorKind::Io,
-            "not a string descriptor",
-        ));
+        return Err(Error::with_message(ErrorKind::Io, "not a string descriptor"));
     }
     let len = (data[0] as usize).min(data.len());
-    Ok(data[2..len]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect())
+    Ok(data[2..len].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect())
 }
 
 #[cfg(test)]
@@ -605,9 +579,7 @@ mod tests {
 
     #[test]
     fn device_descriptor_roundtrip() {
-        let raw = [
-            18, 1, 0x10, 0x02, 0, 0, 0, 64, 0x34, 0x12, 0x78, 0x56, 0x00, 0x01, 1, 2, 3, 1,
-        ];
+        let raw = [18, 1, 0x10, 0x02, 0, 0, 0, 64, 0x34, 0x12, 0x78, 0x56, 0x00, 0x01, 1, 2, 3, 1];
         let d = DeviceDescriptor::from_bytes(&raw).unwrap();
         assert_eq!(d.usb_version, Version(0x0210));
         assert_eq!(d.vendor_id, 0x1234);

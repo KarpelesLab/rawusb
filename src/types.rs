@@ -17,11 +17,7 @@ impl Direction {
     /// Extracts the direction encoded in bit 7 of an endpoint address or a
     /// `bmRequestType`.
     pub const fn from_address(address: u8) -> Self {
-        if address & 0x80 != 0 {
-            Direction::In
-        } else {
-            Direction::Out
-        }
+        if address & 0x80 != 0 { Direction::In } else { Direction::Out }
     }
 
     /// The bit-7 mask for this direction (`0x80` for IN, `0` for OUT).
@@ -250,16 +246,7 @@ impl ControlSetup {
         let v = self.value.to_le_bytes();
         let i = self.index.to_le_bytes();
         let l = self.length.to_le_bytes();
-        [
-            self.request_type,
-            self.request,
-            v[0],
-            v[1],
-            i[0],
-            i[1],
-            l[0],
-            l[1],
-        ]
+        [self.request_type, self.request, v[0], v[1], i[0], i[1], l[0], l[1]]
     }
 
     /// Decodes a packet from wire order.
@@ -529,14 +516,8 @@ mod tests {
 
     #[test]
     fn request_type_bits() {
-        assert_eq!(
-            request_type(Direction::Out, ControlType::Class, Recipient::Interface),
-            0x21
-        );
-        assert_eq!(
-            request_type(Direction::In, ControlType::Vendor, Recipient::Endpoint),
-            0xc2
-        );
+        assert_eq!(request_type(Direction::Out, ControlType::Class, Recipient::Interface), 0x21);
+        assert_eq!(request_type(Direction::In, ControlType::Vendor, Recipient::Endpoint), 0xc2);
     }
 
     #[test]
