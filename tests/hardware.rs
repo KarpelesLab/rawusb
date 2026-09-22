@@ -151,7 +151,6 @@ fn concurrent_control_transfers() {
     for t in &transfers {
         t.set_timeout(Duration::from_secs(2)).unwrap();
         t.submit().unwrap();
-        assert!(t.submit().is_err(), "double submit must fail");
     }
     for t in &transfers {
         assert_eq!(t.wait(Some(Duration::from_secs(5))).unwrap(), TransferStatus::Completed);
@@ -250,6 +249,7 @@ fn bulk_in_timeout_cancel_and_future() {
     t.set_timeout(Duration::from_millis(100)).unwrap();
     t.submit().unwrap();
     assert!(t.is_pending());
+    assert_eq!(t.submit().unwrap_err().kind(), ErrorKind::Busy, "double submit must fail");
     assert!(t.buffer().is_err(), "buffer is locked while in flight");
     assert_eq!(t.wait(None).unwrap(), TransferStatus::TimedOut);
     assert!(!t.is_pending());
