@@ -175,6 +175,10 @@ impl<'a> HotplugBuilder<'a> {
     /// This is the race-free way to say "work with every matching device, now
     /// and later": without it, devices plugged in between your own
     /// enumeration and the watcher starting would be missed.
+    ///
+    /// These events are delivered before the watcher is handed back, so a
+    /// callback sees them on the registering thread and a
+    /// [`HotplugWatcher`] already has them queued.
     pub fn enumerate_existing(mut self, yes: bool) -> Self {
         self.enumerate_existing = yes;
         self
@@ -187,6 +191,10 @@ impl<'a> HotplugBuilder<'a> {
     /// transfer-completion thread, so it may take its time; it must not be
     /// blocked on something that itself waits for hotplug events. It may
     /// register or drop other watchers.
+    ///
+    /// The one exception is
+    /// [`enumerate_existing`](Self::enumerate_existing): that initial batch
+    /// is delivered on the calling thread, before this function returns.
     pub fn register<F>(self, callback: F) -> Result<HotplugRegistration>
     where
         F: FnMut(&HotplugEvent) + Send + 'static,

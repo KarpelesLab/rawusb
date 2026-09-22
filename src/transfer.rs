@@ -191,6 +191,12 @@ impl Transfer {
 
     /// Allocates an isochronous transfer of `num_packets` packets of
     /// `packet_length` bytes each, laid out back to back in the buffer.
+    ///
+    /// For a portable transfer, make `packet_length` the endpoint's maximum
+    /// packet size: WinUSB slices the buffer at that size itself rather than
+    /// following the packet table, and rejects any other layout (the last
+    /// packet of an OUT transfer may be shorter). Linux and macOS accept
+    /// arbitrary per-packet lengths.
     pub fn isochronous(handle: &DeviceHandle, endpoint: u8, packet_length: usize, num_packets: usize) -> Transfer {
         let t = Self::new(handle, TransferType::Isochronous, endpoint, vec![0u8; packet_length * num_packets]);
         t.inner.lock().iso_packets = vec![IsoPacket::new(packet_length as u32); num_packets];
@@ -332,6 +338,8 @@ impl Transfer {
 
     /// Sets the per-packet lengths of an isochronous transfer. The buffer is
     /// grown if the packets need more room than it has.
+    ///
+    /// See [`isochronous`](Self::isochronous) for what Windows accepts here.
     pub fn set_iso_packet_lengths(&self, lengths: &[u32]) -> Result<()> {
         if self.inner.kind != TransferType::Isochronous {
             return Err(Error::with_message(ErrorKind::InvalidParam, "not an isochronous transfer"));

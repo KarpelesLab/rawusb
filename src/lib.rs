@@ -20,6 +20,11 @@
 //!   [`wait`](Transfer::wait), or `.await` its [`completion`](Transfer::completion).
 //!   Isochronous transfers are only available through it.
 //!
+//! # Features
+//!
+//! - `hotplug` (off by default) adds the [`hotplug`] module, which reports
+//!   devices arriving and leaving. See [`Context::hotplug`].
+//!
 //! # Example
 //!
 //! ```no_run
