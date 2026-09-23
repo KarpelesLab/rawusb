@@ -63,6 +63,8 @@ mod handle;
 pub mod hid;
 #[cfg(feature = "hotplug")]
 pub mod hotplug;
+#[cfg(feature = "msc")]
+pub mod msc;
 mod sys;
 pub mod transfer;
 pub mod types;

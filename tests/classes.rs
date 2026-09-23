@@ -73,3 +73,54 @@ fn hid_report_descriptor_and_input() {
         assert!(handle.kernel_driver_active(iface).unwrap());
     }
 }
+
+#[cfg(feature = "msc")]
+#[test]
+fn msc_inquiry_capacity_and_read() {
+    use rawusb::msc::{DataPhase, MassStorage};
+    use std::io::{Read, Seek, SeekFrom};
+    let Some((dev, _)) = env_device("RAWUSB_TEST_MSC") else { return };
+    let msc = MassStorage::open(&dev).unwrap();
+    let info = msc.inquiry(0).unwrap();
+    eprintln!("{} {} {} (max LUN {})", info.vendor, info.product, info.revision, msc.max_lun());
+    let mut disk = msc.block_device(0).unwrap();
+    let cap = disk.capacity();
+    eprintln!(
+        "{} blocks of {} bytes, write protected: {:?}",
+        cap.block_count,
+        cap.block_size,
+        msc.is_write_protected(0)
+    );
+    assert!(cap.block_count > 0);
+
+    // Block reads, direct and through the stream, agree.
+    let bs = cap.block_size as usize;
+    let mut direct = vec![0u8; bs * 4];
+    disk.read_blocks(0, &mut direct).unwrap();
+    let mut streamed = vec![0u8; bs * 4];
+    disk.read_exact(&mut streamed[..7]).unwrap();
+    disk.read_exact(&mut streamed[7..]).unwrap();
+    assert_eq!(direct, streamed);
+
+    // Unaligned read across a block boundary.
+    disk.seek(SeekFrom::Start(bs as u64 - 3)).unwrap();
+    let mut six = [0u8; 6];
+    disk.read_exact(&mut six).unwrap();
+    assert_eq!(&six[..], &direct[bs - 3..bs + 3]);
+
+    // Reading at the end returns EOF, and a block past the end is refused.
+    disk.seek(SeekFrom::End(-2)).unwrap();
+    let mut tail = [0u8; 8];
+    assert_eq!(disk.read(&mut tail).unwrap(), 2);
+    assert_eq!(disk.read(&mut tail).unwrap(), 0);
+    assert!(disk.read_blocks(cap.block_count, &mut direct[..bs]).is_err());
+
+    // A command the device rejects comes back as a failed status plus sense,
+    // and the transport stays usable afterwards.
+    let r = msc.execute(0, &[0xff, 0, 0, 0, 0, 0], DataPhase::None).unwrap();
+    assert!(!r.passed);
+    let sense = msc.request_sense(0).unwrap();
+    eprintln!("bogus opcode: {sense}");
+    assert_eq!(sense.key, rawusb::msc::SenseKey::IllegalRequest);
+    msc.test_unit_ready(0).unwrap();
+}
