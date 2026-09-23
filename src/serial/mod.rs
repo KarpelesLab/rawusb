@@ -705,7 +705,7 @@ impl SerialPort {
     // ----- data ------------------------------------------------------------
 
     /// Sets the timeout used by the `std::io::Read` implementation.
-    /// [`NO_TIMEOUT`](crate::NO_TIMEOUT) (the default) blocks until data
+    /// [`NO_TIMEOUT`] (the default) blocks until data
     /// arrives.
     pub fn set_read_timeout(&self, timeout: Duration) {
         lock(&self.timeouts).0 = timeout;
@@ -717,7 +717,7 @@ impl SerialPort {
     }
 
     /// Reads whatever is available, waiting up to `timeout` for the first
-    /// byte ([`NO_TIMEOUT`](crate::NO_TIMEOUT) waits forever). Returns the
+    /// byte ([`NO_TIMEOUT`] waits forever). Returns the
     /// number of bytes read, never 0 for a non-empty `buf`; fails with
     /// [`ErrorKind::Timeout`] if nothing arrived.
     pub fn read_with_timeout(&self, buf: &mut [u8], timeout: Duration) -> Result<usize> {
