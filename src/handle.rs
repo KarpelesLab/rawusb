@@ -120,8 +120,19 @@ impl DeviceHandle {
     /// [`set_auto_detach_kernel_driver`](Self::set_auto_detach_kernel_driver)
     /// is on, a kernel driver bound to the interface is detached first.
     pub fn claim_interface(&self, interface: u8) -> Result<()> {
-        let auto = self.shared.auto_detach.load(Ordering::Relaxed);
-        if auto && self.shared.sys.kernel_driver_active(interface).unwrap_or(false) {
+        self.claim(interface, self.shared.auto_detach.load(Ordering::Relaxed))
+    }
+
+    /// Claims an interface, detaching (and later re-attaching) a bound kernel
+    /// driver whatever the auto-detach setting. The class helpers use this so
+    /// they work out of the box without changing the caller's handle setting.
+    #[cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+    pub(crate) fn claim_interface_detaching(&self, interface: u8) -> Result<()> {
+        self.claim(interface, true)
+    }
+
+    fn claim(&self, interface: u8, detach: bool) -> Result<()> {
+        if detach && self.shared.sys.kernel_driver_active(interface).unwrap_or(false) {
             match self.shared.sys.detach_kernel_driver(interface) {
                 Ok(()) => self.shared.detached.lock().unwrap_or_else(|e| e.into_inner()).push(interface),
                 Err(e) if e.kind() == ErrorKind::NotSupported || e.kind() == ErrorKind::NotFound => {}

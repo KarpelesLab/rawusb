@@ -11,7 +11,7 @@ categories = ["hardware-support", "os", "api-bindings"]
 exclude = [".github", "SECURITY.md"]
 
 [package.metadata.docs.rs]
-# Hotplug is opt-in; document it anyway.
+# Hotplug and the class helpers are opt-in; document them anyway.
 all-features = true
 targets = [
     "x86_64-unknown-linux-gnu",
@@ -30,6 +30,20 @@ default = []
 # second background thread per context (started only when a watcher is
 # actually registered) and, on Linux, a netlink socket.
 hotplug = []
+
+# Class helpers: ready-made drivers for common USB device classes, built on
+# the public transfer API. Each one is independent; enable only what you use.
+#
+# HID: report descriptor parser, input/output/feature reports, idle/protocol.
+hid = []
+# Mass storage: bulk-only transport, SCSI block commands, a `Read + Write +
+# Seek` block device.
+msc = []
+# USB serial adapters: CDC-ACM and FTDI behind one `SerialPort` type.
+serial = []
+# USB Video Class: format/frame descriptors, probe/commit negotiation,
+# isochronous and bulk streaming with frame reassembly, camera controls.
+uvc = []
 
 [[example]]
 name = "hotplug"

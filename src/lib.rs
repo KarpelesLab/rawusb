@@ -52,11 +52,15 @@
 
 #![warn(missing_debug_implementations)]
 
+#[cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+mod class;
 mod context;
 pub mod descriptors;
 mod device;
 mod error;
 mod handle;
+#[cfg(feature = "hid")]
+pub mod hid;
 #[cfg(feature = "hotplug")]
 pub mod hotplug;
 mod sys;
