@@ -7,7 +7,9 @@
 //! - `RAWUSB_TEST_MSC=vvvv:pppp`: an *unmounted* mass-storage device; only
 //!   read commands are sent.
 //! - `RAWUSB_TEST_SERIAL=vvvv:pppp[:iface]`: a USB serial adapter (CDC-ACM or
-//!   FTDI). Line settings and modem lines are changed; nothing is sent.
+//!   FTDI; `iface` picks an FTDI port). Line settings change; nothing is
+//!   sent. Add `RAWUSB_TEST_SERIAL_LINES=1` to also toggle DTR/RTS and send
+//!   a break, which some boards wire to their reset circuitry.
 //! - `RAWUSB_TEST_UVC=vvvv:pppp`: a webcam; a few frames are captured.
 
 #![cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
@@ -123,4 +125,75 @@ fn msc_inquiry_capacity_and_read() {
     eprintln!("bogus opcode: {sense}");
     assert_eq!(sense.key, rawusb::msc::SenseKey::IllegalRequest);
     msc.test_unit_ready(0).unwrap();
+}
+
+#[cfg(feature = "serial")]
+#[test]
+fn serial_configuration() {
+    use rawusb::serial::{DataBits, FlowControl, LineConfig, Parity, SerialKind, SerialPort, StopBits};
+    let Some((dev, rest)) = env_device("RAWUSB_TEST_SERIAL") else {
+        return;
+    };
+    let port = match rest.first() {
+        Some(i) => {
+            let iface = i.parse().unwrap();
+            if dev.vendor_id() == rawusb::serial::ftdi::VENDOR_ID {
+                SerialPort::open_ftdi(dev.open().unwrap(), iface).unwrap()
+            } else {
+                SerialPort::open_cdc_acm(dev.open().unwrap(), iface).unwrap()
+            }
+        }
+        None => SerialPort::open(&dev).unwrap(),
+    };
+    eprintln!("{:?}", port.kind());
+
+    let config = LineConfig {
+        baud_rate: 57_600,
+        data_bits: DataBits::Seven,
+        parity: Parity::Even,
+        stop_bits: StopBits::Two,
+    };
+    port.set_line_config(&config).unwrap();
+    assert_eq!(port.line_config().unwrap(), Some(config));
+    port.set_baud_rate(115_200).unwrap();
+    assert_eq!(port.line_config().unwrap().unwrap().baud_rate, 115_200);
+    eprintln!("{:?}", port.modem_status().unwrap());
+
+    if let SerialKind::Ftdi(chip) = port.kind() {
+        assert!(port.set_baud_rate(chip.max_baud_rate() + 1).is_err());
+        port.set_baud_rate(chip.max_baud_rate()).unwrap();
+        port.set_flow_control(FlowControl::RtsCts).unwrap();
+        port.set_flow_control(FlowControl::XonXoff { xon: 0x11, xoff: 0x13 }).unwrap();
+        port.set_flow_control(FlowControl::None).unwrap();
+        port.set_latency_timer(2).unwrap();
+        assert_eq!(port.latency_timer().unwrap(), 2);
+        port.set_latency_timer(16).unwrap();
+        port.purge(true, true).unwrap();
+        // Nothing is connected to talk back: the chip keeps sending status
+        // packets, which must be swallowed until the timeout.
+        let mut buf = [0u8; 16];
+        let start = std::time::Instant::now();
+        match port.read_with_timeout(&mut buf, Duration::from_millis(200)) {
+            Ok(n) => eprintln!("line had data: {:02x?}", &buf[..n]),
+            Err(e) => assert_eq!(e.kind(), ErrorKind::Timeout, "{e}"),
+        }
+        assert!(start.elapsed() < Duration::from_secs(2));
+    } else {
+        assert_eq!(
+            port.set_flow_control(FlowControl::RtsCts).unwrap_err().kind(),
+            ErrorKind::NotSupported
+        );
+    }
+
+    if std::env::var_os("RAWUSB_TEST_SERIAL_LINES").is_some() {
+        port.set_dtr(true).unwrap();
+        port.set_rts(true).unwrap();
+        port.send_break(Duration::from_millis(50)).unwrap();
+        port.set_dtr(false).unwrap();
+        port.set_rts(false).unwrap();
+    }
+
+    let handle = port.handle().clone();
+    drop(port);
+    assert!(handle.claimed_interfaces().is_empty());
 }
