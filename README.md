@@ -117,7 +117,24 @@ port.set_line_config(&LineConfig::new(115_200))?;
 port.write_all(b"hello\r\n")?;
 ```
 
-A helper claims the interfaces it drives for as long as it lives. On Linux
+On a composite device (a debug probe with UARTs and raw HID channels, a
+dock, a phone), take the device first and run the helpers you need on it.
+Each module lists what it found (`hid::interfaces`, `serial::ports`,
+`msc::interfaces`, `uvc::interfaces`) and can open one interface or all:
+
+```rust
+let handle = dev.open()?;
+handle.claim_all_interfaces()?;           // detach every kernel driver up front
+let uarts = SerialPort::open_all(&handle)?;
+let raw_hid = HidDevice::open_all(&handle)?;
+let keypad = HidDevice::open_interface(handle.clone(), 3)?;
+```
+
+Helpers never share an interface (a second one on the same interface fails
+with `ErrorKind::Busy`), and on a taken device they borrow the handle's
+claims, so dropping one does not hand its interface back to the kernel.
+
+Without taking the device first, a helper claims the interfaces it drives for as long as it lives. On Linux
 the kernel driver (usbhid, usb-storage, ftdi_sio, cdc_acm, uvcvideo) is
 detached meanwhile and re-attached when the helper is dropped, so the
 matching `/dev` node disappears in between; a process that is killed before

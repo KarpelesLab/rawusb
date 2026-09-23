@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `uvc`: `Camera` with format/frame/control descriptors and unit controls,
     and `Stream`, which negotiates, streams over isochronous or bulk
     endpoints and reassembles frames.
+- `DeviceHandle::claim_all_interfaces` takes a whole device (detaching every
+  kernel driver) so several class helpers can run on it; helpers lease
+  their interfaces exclusively and borrow the handle's claims when present.
+  `DeviceHandle::is_claimed` reports a claim.
+- Discovery for composite devices: `hid::interfaces`, `msc::interfaces`,
+  `serial::ports`, `uvc::interfaces`, plus `HidDevice::open_all`,
+  `SerialPort::open_all` and `SerialPort::open_interface` (CDC-ACM or FTDI,
+  detected).
 - `hid_dump`, `msc_info`, `serial_monitor` and `uvc_capture` examples, and a
   class-helper hardware test suite driven by environment variables.
 

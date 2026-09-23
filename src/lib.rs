@@ -37,6 +37,24 @@
 //! - `serial`: [`serial::SerialPort`] for CDC-ACM devices and FTDI chips.
 //! - `uvc`: [`uvc::Camera`] for webcams: formats, controls, frame streaming.
 //!
+//! On a composite device, take the whole device first with
+//! [`DeviceHandle::claim_all_interfaces`], then start whatever helpers you
+//! need on clones of that handle. Each helper drives its own interfaces
+//! (a second one on the same interface fails with [`ErrorKind::Busy`]), and
+//! helpers can be dropped and reopened while the device stays taken:
+//!
+//! ```no_run
+//! # #[cfg(all(feature = "hid", feature = "serial"))] {
+//! # let ctx = rawusb::Context::new()?;
+//! # let dev = ctx.find_device(0x1234, 0x5678)?.unwrap();
+//! let handle = dev.open()?;
+//! handle.claim_all_interfaces()?; // detaches every kernel driver
+//! let console = rawusb::serial::SerialPort::open_all(&handle)?;
+//! let raw_hid = rawusb::hid::HidDevice::open_all(&handle)?;
+//! # }
+//! # Ok::<(), rawusb::Error>(())
+//! ```
+//!
 //! # Example
 //!
 //! ```no_run

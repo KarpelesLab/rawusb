@@ -194,6 +194,13 @@ pub struct StreamRequest {
     pub frame_interval: u32,
 }
 
+/// The VideoControl interfaces of a device, one per video function (most
+/// cameras have one; some capture devices have several). Pass one to
+/// [`Camera::open_interface`].
+pub fn interfaces(device: &Device) -> Result<Vec<crate::InterfaceDescriptor>> {
+    class::interfaces_where(device, is_video_control)
+}
+
 /// An open video function. See the [module documentation](self).
 #[derive(Debug)]
 pub struct Camera {

@@ -12,27 +12,38 @@ use crate::handle::DeviceHandle;
 use crate::types::{Direction, TransferType};
 use crate::{Error, ErrorKind, Result};
 
-/// Interfaces claimed on behalf of a class helper, released (and their kernel
-/// drivers re-attached) when dropped.
+/// The interfaces a class helper drives.
+///
+/// Each is leased exclusively (a second helper on the same handle gets
+/// [`ErrorKind::Busy`]). An interface the handle had already claimed, for
+/// instance after [`DeviceHandle::claim_all_interfaces`], is borrowed and
+/// stays claimed on drop; one the helper had to claim itself (detaching the
+/// kernel driver) is released on drop, which re-attaches the driver.
 pub(crate) struct Claim {
     handle: DeviceHandle,
-    interfaces: Vec<u8>,
+    leased: Vec<u8>,
+    owned: Vec<u8>,
 }
 
 impl Claim {
-    /// Claims every listed interface, detaching kernel drivers as needed. On
-    /// failure, whatever was already claimed is released again.
+    /// Leases and, where needed, claims the listed interfaces. On failure
+    /// everything done so far is undone (by `Drop`).
     pub(crate) fn new(handle: DeviceHandle, interfaces: &[u8]) -> Result<Claim> {
+        let mut wanted = interfaces.to_vec();
+        wanted.sort_unstable();
+        wanted.dedup();
+        handle.lease(&wanted)?;
         let mut claim = Claim {
             handle,
-            interfaces: Vec::with_capacity(interfaces.len()),
+            leased: wanted,
+            owned: Vec::new(),
         };
-        for &i in interfaces {
-            if claim.interfaces.contains(&i) {
+        for i in claim.leased.clone() {
+            if claim.handle.is_claimed(i) {
                 continue;
             }
             claim.handle.claim_interface_detaching(i)?;
-            claim.interfaces.push(i);
+            claim.owned.push(i);
         }
         Ok(claim)
     }
@@ -44,9 +55,10 @@ impl Claim {
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        for &i in &self.interfaces {
+        for &i in &self.owned {
             let _ = self.handle.release_interface(i);
         }
+        self.handle.unlease(&self.leased);
     }
 }
 
@@ -54,9 +66,23 @@ impl std::fmt::Debug for Claim {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Claim")
             .field("device", self.handle.device())
-            .field("interfaces", &self.interfaces)
+            .field("interfaces", &self.leased)
+            .field("borrowed", &(self.owned.len() < self.leased.len()))
             .finish()
     }
+}
+
+/// Every interface (alternate setting 0) of the active configuration that
+/// satisfies `pred`, in descriptor order.
+pub(crate) fn interfaces_where(device: &Device, pred: impl Fn(&InterfaceDescriptor) -> bool) -> Result<Vec<InterfaceDescriptor>> {
+    let cfg = device.active_config_descriptor()?;
+    Ok(cfg
+        .interfaces
+        .iter()
+        .map(|i| i.alt_setting(0).unwrap_or_else(|| i.first()))
+        .filter(|a| pred(a))
+        .cloned()
+        .collect())
 }
 
 /// The first interface (alternate setting 0) of the active configuration that
@@ -66,12 +92,9 @@ pub(crate) fn find_interface(
     what: &'static str,
     pred: impl Fn(&InterfaceDescriptor) -> bool,
 ) -> Result<InterfaceDescriptor> {
-    let cfg = device.active_config_descriptor()?;
-    cfg.interfaces
-        .iter()
-        .map(|i| i.first())
-        .find(|a| pred(a))
-        .cloned()
+    interfaces_where(device, pred)?
+        .into_iter()
+        .next()
         .ok_or_else(|| Error::with_message(ErrorKind::NotFound, what))
 }
 

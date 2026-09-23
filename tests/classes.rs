@@ -134,15 +134,11 @@ fn serial_configuration() {
     let Some((dev, rest)) = env_device("RAWUSB_TEST_SERIAL") else {
         return;
     };
+    let ports = rawusb::serial::ports(&dev).unwrap();
+    eprintln!("ports: {ports:?}");
+    assert!(!ports.is_empty());
     let port = match rest.first() {
-        Some(i) => {
-            let iface = i.parse().unwrap();
-            if dev.vendor_id() == rawusb::serial::ftdi::VENDOR_ID {
-                SerialPort::open_ftdi(dev.open().unwrap(), iface).unwrap()
-            } else {
-                SerialPort::open_cdc_acm(dev.open().unwrap(), iface).unwrap()
-            }
-        }
+        Some(i) => SerialPort::open_interface(dev.open().unwrap(), i.parse().unwrap()).unwrap(),
         None => SerialPort::open(&dev).unwrap(),
     };
     eprintln!("{:?}", port.kind());
@@ -252,4 +248,49 @@ fn uvc_capture() {
     // A second stream on the same camera works after the first stopped.
     let stream = cam.start(&request).unwrap();
     stream.next_frame(Duration::from_secs(5)).unwrap();
+}
+
+/// The "take the device, then run helpers on it" model: helpers borrow the
+/// handle's claims, never share an interface, and leave the device taken.
+#[cfg(feature = "hid")]
+#[test]
+fn hid_on_a_taken_device() {
+    use rawusb::hid::{self, HidDevice};
+    let Some((dev, _)) = env_device("RAWUSB_TEST_HID") else { return };
+    let handle = dev.open().unwrap();
+    handle.claim_all_interfaces().unwrap();
+    let all: Vec<u8> = dev
+        .active_config_descriptor()
+        .unwrap()
+        .interfaces
+        .iter()
+        .map(|i| i.number)
+        .collect();
+    assert_eq!(handle.claimed_interfaces().len(), all.len());
+    let first = hid::interfaces(&dev).unwrap()[0].number;
+    assert!(!handle.kernel_driver_active(first).unwrap());
+
+    let a = HidDevice::open_interface(handle.clone(), first).unwrap();
+    let err = HidDevice::open_interface(handle.clone(), first).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Busy, "{err}");
+    drop(a);
+    // The helper borrowed the claim: the device is still taken.
+    assert!(handle.is_claimed(first));
+    assert!(!handle.kernel_driver_active(first).unwrap());
+
+    // All of them at once, then a second batch after the first is gone.
+    let hids = HidDevice::open_all(&handle).unwrap();
+    assert_eq!(hids.len(), hid::interfaces(&dev).unwrap().len());
+    assert_eq!(HidDevice::open_all(&handle).unwrap_err().kind(), ErrorKind::Busy);
+    drop(hids);
+    let hids = HidDevice::open_all(&handle).unwrap();
+    drop(hids);
+
+    // Dropping the last handle gives the device back to the kernel.
+    drop(handle);
+    std::thread::sleep(Duration::from_millis(300));
+    if cfg!(target_os = "linux") {
+        let h = dev.open().unwrap();
+        assert!(h.kernel_driver_active(first).unwrap());
+    }
 }

@@ -146,6 +146,19 @@ impl HidDescriptor {
     }
 }
 
+/// The HID interfaces of a device (alternate setting 0 of each), in
+/// descriptor order. Many devices have several: a keyboard's media keys, a
+/// receiver's paired devices, or a gadget's separate raw HID channels. Open
+/// one with [`HidDevice::open_interface`], or all with
+/// [`HidDevice::open_all`].
+pub fn interfaces(device: &Device) -> Result<Vec<InterfaceDescriptor>> {
+    class::interfaces_where(device, is_hid)
+}
+
+fn is_hid(a: &InterfaceDescriptor) -> bool {
+    a.class == crate::types::class::HID
+}
+
 /// An open HID interface. See the [module documentation](self).
 ///
 /// The interface is claimed (detaching the kernel driver if necessary) for as
@@ -166,8 +179,17 @@ pub struct HidDevice {
 impl HidDevice {
     /// Opens the first HID interface of a device.
     pub fn open(device: &Device) -> Result<HidDevice> {
-        let iface = class::find_interface(device, "device has no HID interface", |a| a.class == crate::types::class::HID)?;
+        let iface = class::find_interface(device, "device has no HID interface", is_hid)?;
         Self::open_interface(device.open()?, iface.number)
+    }
+
+    /// Opens every HID interface of a device through one handle. Fails (and
+    /// opens none) if any of them cannot be opened.
+    pub fn open_all(handle: &DeviceHandle) -> Result<Vec<HidDevice>> {
+        interfaces(handle.device())?
+            .iter()
+            .map(|i| Self::open_interface(handle.clone(), i.number))
+            .collect()
     }
 
     /// Opens a specific HID interface of an already-open device. Devices with
@@ -175,7 +197,7 @@ impl HidDevice {
     /// for several devices) expose one per function.
     pub fn open_interface(handle: DeviceHandle, interface: u8) -> Result<HidDevice> {
         let iface = class::interface(handle.device(), interface)?;
-        if iface.class != crate::types::class::HID {
+        if !is_hid(&iface) {
             return Err(Error::with_message(ErrorKind::InvalidParam, "not a HID interface"));
         }
         let hid =

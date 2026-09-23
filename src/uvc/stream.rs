@@ -270,7 +270,8 @@ struct Shared {
 pub(crate) struct Pump {
     transfers: Vec<Transfer>,
     shared: Arc<Mutex<Shared>>,
-    pub(crate) frames: Receiver<Frame>,
+    /// Behind a mutex so a `Stream` can be shared between threads.
+    frames: Mutex<Receiver<Frame>>,
 }
 
 fn lock(m: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
@@ -310,7 +311,7 @@ impl Pump {
         let pump = Pump {
             transfers,
             shared,
-            frames: rx,
+            frames: Mutex::new(rx),
         };
         for t in &pump.transfers {
             t.submit()?;
@@ -324,7 +325,8 @@ impl Pump {
 
     /// Waits for the next frame, reporting why streaming ended if it did.
     pub(crate) fn next(&self, timeout: Duration) -> Result<Frame> {
-        match self.frames.recv_timeout(timeout) {
+        let frames = self.frames.lock().unwrap_or_else(|e| e.into_inner());
+        match frames.recv_timeout(timeout) {
             Ok(f) => Ok(f),
             Err(RecvTimeoutError::Timeout) => match lock(&self.shared).failure {
                 Some(s) => Err(stream_error(s)),

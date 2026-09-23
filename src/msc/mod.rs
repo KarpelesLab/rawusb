@@ -133,14 +133,25 @@ fn is_bulk_only(a: &crate::InterfaceDescriptor) -> bool {
     a.class == crate::types::class::MASS_STORAGE && a.protocol == 0x50
 }
 
+/// The mass-storage interfaces of a device that offer the bulk-only
+/// transport (on some alternate setting; UAS devices list it second), as the
+/// descriptor of that alternate setting.
+pub fn interfaces(device: &Device) -> Result<Vec<crate::InterfaceDescriptor>> {
+    let cfg = device.active_config_descriptor()?;
+    Ok(cfg
+        .interfaces
+        .iter()
+        .filter_map(|i| i.alt_settings.iter().find(|a| is_bulk_only(a)).cloned())
+        .collect())
+}
+
 impl MassStorage {
     /// Opens the first bulk-only mass-storage interface of a device. For a
     /// UAS device, the bulk-only alternate setting is selected.
     pub fn open(device: &Device) -> Result<MassStorage> {
-        let cfg = device.active_config_descriptor()?;
-        let iface = cfg
-            .all_alt_settings()
-            .find(|a| is_bulk_only(a))
+        let iface = interfaces(device)?
+            .into_iter()
+            .next()
             .ok_or_else(|| Error::with_message(ErrorKind::NotFound, "device has no bulk-only mass-storage interface"))?;
         Self::open_interface(device.open()?, iface.number)
     }

@@ -224,6 +224,44 @@ impl ModemStatus {
     }
 }
 
+/// A serial port a device offers, as listed by [`ports`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PortInfo {
+    /// The interface to pass to [`SerialPort::open_interface`]: the
+    /// communications interface of a CDC-ACM function, or an FTDI port's
+    /// interface.
+    pub interface: u8,
+    /// Which protocol the port speaks.
+    pub kind: PortKind,
+}
+
+/// The protocol of a [`PortInfo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PortKind {
+    /// CDC Abstract Control Model.
+    CdcAcm,
+    /// An FTDI chip's port.
+    Ftdi,
+}
+
+/// The serial ports of a device, in descriptor order: every CDC-ACM
+/// function, and on FTDI devices (vendor ID 0x0403) every port. Composite
+/// devices often have several (a debug probe with two UARTs, a modem with
+/// AT and diagnostic ports).
+pub fn ports(device: &Device) -> Result<Vec<PortInfo>> {
+    let ftdi = device.vendor_id() == ftdi::VENDOR_ID;
+    let is_ftdi_port = |a: &crate::InterfaceDescriptor| {
+        class::endpoint(a, Direction::In, TransferType::Bulk).is_some() && class::endpoint(a, Direction::Out, TransferType::Bulk).is_some()
+    };
+    Ok(class::interfaces_where(device, |a| cdc::is_acm(a) || ftdi && is_ftdi_port(a))?
+        .into_iter()
+        .map(|a| PortInfo {
+            interface: a.number,
+            kind: if cdc::is_acm(&a) { PortKind::CdcAcm } else { PortKind::Ftdi },
+        })
+        .collect())
+}
+
 /// Which kind of adapter a [`SerialPort`] drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SerialKind {
@@ -291,25 +329,38 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl SerialPort {
-    /// Opens the first serial port of a device: a CDC-ACM function if it has
-    /// one, else interface 0 of an FTDI chip (vendor ID 0x0403).
+    /// Opens the first serial port of a device (see [`ports`]).
     pub fn open(device: &Device) -> Result<SerialPort> {
-        if let Ok(comm) = class::find_interface(device, "", cdc::is_acm) {
-            return Self::open_cdc_acm(device.open()?, comm.number);
+        let first = ports(device)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::with_message(ErrorKind::NotSupported, "not a recognised USB serial adapter (CDC-ACM or FTDI)"))?;
+        Self::open_port(device.open()?, first)
+    }
+
+    /// Opens the port on the given interface, whichever kind it is.
+    pub fn open_interface(handle: DeviceHandle, interface: u8) -> Result<SerialPort> {
+        let port = ports(handle.device())?
+            .into_iter()
+            .find(|p| p.interface == interface)
+            .ok_or_else(|| Error::with_message(ErrorKind::InvalidParam, "no serial port on that interface"))?;
+        Self::open_port(handle, port)
+    }
+
+    /// Opens every serial port of a device through one handle. Fails (and
+    /// opens none) if any of them cannot be opened.
+    pub fn open_all(handle: &DeviceHandle) -> Result<Vec<SerialPort>> {
+        ports(handle.device())?
+            .into_iter()
+            .map(|p| Self::open_port(handle.clone(), p))
+            .collect()
+    }
+
+    fn open_port(handle: DeviceHandle, port: PortInfo) -> Result<SerialPort> {
+        match port.kind {
+            PortKind::CdcAcm => Self::open_cdc_acm(handle, port.interface),
+            PortKind::Ftdi => Self::open_ftdi(handle, port.interface),
         }
-        if device.vendor_id() == ftdi::VENDOR_ID {
-            let first = device
-                .active_config_descriptor()?
-                .interfaces
-                .first()
-                .map(|i| i.number)
-                .ok_or_else(|| Error::with_message(ErrorKind::NotFound, "device has no interfaces"))?;
-            return Self::open_ftdi(device.open()?, first);
-        }
-        Err(Error::with_message(
-            ErrorKind::NotSupported,
-            "not a recognised USB serial adapter (CDC-ACM or FTDI)",
-        ))
     }
 
     /// Opens a CDC-ACM port given its communications interface. The matching
