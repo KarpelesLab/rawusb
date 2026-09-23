@@ -70,6 +70,8 @@ pub mod serial;
 mod sys;
 pub mod transfer;
 pub mod types;
+#[cfg(feature = "uvc")]
+pub mod uvc;
 
 pub use context::Context;
 pub use descriptors::{ConfigDescriptor, DeviceDescriptor, EndpointDescriptor, Interface, InterfaceDescriptor};

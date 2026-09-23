@@ -197,3 +197,59 @@ fn serial_configuration() {
     drop(port);
     assert!(handle.claimed_interfaces().is_empty());
 }
+
+#[cfg(feature = "uvc")]
+#[test]
+fn uvc_capture() {
+    use rawusb::uvc::{Camera, ControlRequest, FormatKind};
+    let Some((dev, _)) = env_device("RAWUSB_TEST_UVC") else { return };
+    let cam = Camera::open(&dev).unwrap();
+    let vc = cam.control_interface();
+    eprintln!(
+        "UVC {:#06x}, clock {} Hz, entities {:?}",
+        vc.uvc_version, vc.clock_frequency, vc.entities
+    );
+    if let Some(pu) = vc.processing_unit() {
+        let cur = cam.get_control_int(pu, rawusb::uvc::pu::BRIGHTNESS, ControlRequest::Cur, 2, true);
+        let def = cam.get_control_int(pu, rawusb::uvc::pu::BRIGHTNESS, ControlRequest::Def, 2, true);
+        eprintln!("brightness {cur:?} (default {def:?})");
+    }
+    let vs = &cam.streaming_interfaces()[0];
+    // Prefer an uncompressed format (sizes are predictable), smallest frame.
+    let format = vs
+        .formats
+        .iter()
+        .find(|f| matches!(f.kind, FormatKind::Uncompressed { .. }))
+        .unwrap_or(&vs.formats[0]);
+    let frame = format.frames.iter().min_by_key(|f| f.width as u32 * f.height as u32).unwrap();
+    eprintln!(
+        "streaming {} {}x{}",
+        String::from_utf8_lossy(&format.fourcc()),
+        frame.width,
+        frame.height
+    );
+    let request = cam.find_format(format.fourcc(), frame.width, frame.height).unwrap();
+    let stream = cam.start(&request).unwrap();
+    eprintln!("committed {:?}", stream.control());
+    let mut last = None;
+    for _ in 0..5 {
+        let f = stream.next_frame(Duration::from_secs(5)).unwrap();
+        eprintln!("frame {} {} bytes error={}", f.sequence, f.data.len(), f.error);
+        if let FormatKind::Uncompressed { bits_per_pixel, .. } = format.kind
+            && !f.error
+        {
+            assert_eq!(
+                f.data.len(),
+                frame.width as usize * frame.height as usize * bits_per_pixel as usize / 8
+            );
+        }
+        if let Some(prev) = last {
+            assert!(f.sequence > prev);
+        }
+        last = Some(f.sequence);
+    }
+    drop(stream);
+    // A second stream on the same camera works after the first stopped.
+    let stream = cam.start(&request).unwrap();
+    stream.next_frame(Duration::from_secs(5)).unwrap();
+}
