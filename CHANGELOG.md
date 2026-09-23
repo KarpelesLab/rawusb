@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/KarpelesLab/rawusb/compare/v0.1.2...v0.1.3) - 2026-09-23
+
+### Other
+
+- Fix string descriptors with trailing junk and harden string reads
+
 ### Fixed
 - String descriptors end at the first NUL character. Some devices (an
   FT2232D clone here) declare a longer descriptor holding a NUL-terminated

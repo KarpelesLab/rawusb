@@ -1,6 +1,6 @@
 [package]
 name = "rawusb"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.89"
 description = "Dependency-free, cross-platform USB device access in the spirit of libusb: enumeration, descriptors, synchronous and asynchronous transfers on Linux, macOS and Windows."
