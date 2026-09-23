@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/KarpelesLab/rawusb/compare/v0.1.1...v0.1.2) - 2026-09-23
+
+### Other
+
+- Add USB Ethernet devices (ECM, NCM, RNDIS) and pktkit integration
+- Let class helpers share a taken device and discover every interface
+- Add class-helper examples and document the new features
+- Add the uvc feature: video descriptors, controls and frame streaming
+- Fix redundant doc links in the serial module
+- Add the serial feature: CDC-ACM and FTDI behind one SerialPort
+- Add the msc feature: bulk-only transport, SCSI commands, block device
+- Add the hid feature: HID interfaces, report descriptor parser, report I/O
+
 ### Added
 - Class helpers, each behind its own opt-in feature:
   - `hid`: `HidDevice` (report I/O with hidapi's report-ID conventions,
