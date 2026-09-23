@@ -1,16 +1,22 @@
-//! Plumbing shared by the class helpers (`hid`, `msc`, `serial`, `uvc`):
+//! Plumbing shared by the class helpers (`hid`, `msc`, `net`, `serial`, `uvc`):
 //! finding an interface in the active configuration and holding a claim on
 //! it for as long as the helper lives.
 
 // Each helper uses a different subset of this module; with only one class
 // feature enabled some items are legitimately unused.
-#![cfg_attr(not(all(feature = "hid", feature = "msc", feature = "serial", feature = "uvc")), allow(dead_code))]
+#![cfg_attr(
+    not(all(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc")),
+    allow(dead_code)
+)]
 
 use crate::descriptors::{EndpointDescriptor, InterfaceDescriptor};
 use crate::device::Device;
 use crate::handle::DeviceHandle;
+use crate::transfer::Transfer;
 use crate::types::{Direction, TransferType};
 use crate::{Error, ErrorKind, Result};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// The interfaces a class helper drives.
 ///
@@ -69,6 +75,43 @@ impl std::fmt::Debug for Claim {
             .field("interfaces", &self.leased)
             .field("borrowed", &(self.owned.len() < self.leased.len()))
             .finish()
+    }
+}
+
+/// A transfer that resubmits itself from its completion callback until
+/// dropped: notification endpoints, receive queues.
+pub(crate) struct Repeating {
+    transfer: Transfer,
+    /// Set on drop. The callback checks it and resubmits under this lock, so
+    /// once the flag is set any resubmission already happened (and can be
+    /// cancelled) or never will.
+    stop: Arc<Mutex<bool>>,
+}
+
+impl Repeating {
+    /// Submits `transfer` and keeps it going. `on_complete` runs on the event
+    /// thread after every completion and says whether to resubmit; it must
+    /// not block.
+    pub(crate) fn start(transfer: Transfer, mut on_complete: impl FnMut(&Transfer) -> bool + Send + 'static) -> Result<Repeating> {
+        let stop = Arc::new(Mutex::new(false));
+        let flag = Arc::clone(&stop);
+        transfer.set_callback(move |t| {
+            let again = on_complete(t);
+            let stopped = flag.lock().unwrap_or_else(|e| e.into_inner());
+            if again && !*stopped {
+                let _ = t.submit();
+            }
+        })?;
+        transfer.submit()?;
+        Ok(Repeating { transfer, stop })
+    }
+}
+
+impl Drop for Repeating {
+    fn drop(&mut self) {
+        *self.stop.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        let _ = self.transfer.cancel();
+        let _ = self.transfer.wait(Some(Duration::from_secs(1)));
     }
 }
 

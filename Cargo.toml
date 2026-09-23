@@ -44,6 +44,12 @@ serial = []
 # USB Video Class: format/frame descriptors, probe/commit negotiation,
 # isochronous and bulk streaming with frame reassembly, camera controls.
 uvc = []
+# USB Ethernet: CDC-ECM, CDC-NCM and RNDIS devices as one `NetDevice`.
+net = []
+# `pktkit::L2Device` for `net::NetDevice`. The only feature that pulls in a
+# dependency: KarpelesLab's pktkit, itself dependency-free in its default
+# configuration.
+pktkit = ["net", "dep:pktkit"]
 
 [[example]]
 name = "hotplug"
@@ -66,6 +72,7 @@ name = "uvc_capture"
 required-features = ["uvc"]
 
 [dependencies]
+pktkit = { version = "0.1.3", optional = true, default-features = false }
 
 [lints.rust]
 missing_docs = "warn"

@@ -36,6 +36,10 @@
 //!   `Read + Write + Seek` [`msc::BlockDevice`].
 //! - `serial`: [`serial::SerialPort`] for CDC-ACM devices and FTDI chips.
 //! - `uvc`: [`uvc::Camera`] for webcams: formats, controls, frame streaming.
+//! - `net`: [`net::NetDevice`] for USB Ethernet functions (CDC-ECM, CDC-NCM,
+//!   RNDIS).
+//! - `pktkit`: implements `pktkit::L2Device` for [`net::NetDevice`]. The only
+//!   feature with a dependency, the [pktkit](https://docs.rs/pktkit) crate.
 //!
 //! On a composite device, take the whole device first with
 //! [`DeviceHandle::claim_all_interfaces`], then start whatever helpers you
@@ -82,7 +86,7 @@
 
 #![warn(missing_debug_implementations)]
 
-#[cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+#[cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
 mod class;
 mod context;
 pub mod descriptors;
@@ -95,6 +99,8 @@ pub mod hid;
 pub mod hotplug;
 #[cfg(feature = "msc")]
 pub mod msc;
+#[cfg(feature = "net")]
+pub mod net;
 #[cfg(feature = "serial")]
 pub mod serial;
 mod sys;

@@ -11,8 +11,12 @@
 //!   sent. Add `RAWUSB_TEST_SERIAL_LINES=1` to also toggle DTR/RTS and send
 //!   a break, which some boards wire to their reset circuitry.
 //! - `RAWUSB_TEST_UVC=vvvv:pppp`: a webcam; a few frames are captured.
+//! - `RAWUSB_TEST_NET=vvvv:pppp`: a USB network function (a phone with USB
+//!   tethering, a gadget-mode board). Waits for a frame from the network and
+//!   sends a few broadcast frames with the IEEE local experimental EtherType
+//!   (0x88b5), which every stack ignores.
 
-#![cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+#![cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
 
 use rawusb::{Context, Device, ErrorKind};
 #[allow(unused_imports)]
@@ -293,4 +297,76 @@ fn hid_on_a_taken_device() {
         let h = dev.open().unwrap();
         assert!(h.kernel_driver_active(first).unwrap());
     }
+}
+
+#[cfg(feature = "net")]
+#[test]
+fn net_send_and_receive() {
+    use rawusb::net::{self, NetDevice};
+    let Some((dev, _)) = env_device("RAWUSB_TEST_NET") else { return };
+    eprintln!("functions: {:?}", net::interfaces(&dev).unwrap());
+    let nic = NetDevice::open(&dev).unwrap();
+    let mac = nic.mac_address();
+    eprintln!(
+        "{:?} {mac:02x?} max frame {} link {:?}",
+        nic.kind(),
+        nic.max_frame_size(),
+        nic.link()
+    );
+
+    // Something always shows up on a live link (ARP, IPv6 RA, mDNS, ...).
+    let f = nic.recv(Duration::from_secs(20)).expect("no frame within 20 s");
+    eprintln!("received {} bytes, ethertype {:02x}{:02x}", f.len(), f[12], f[13]);
+
+    let mut frame = vec![0xffu8; 6];
+    frame.extend_from_slice(&mac);
+    frame.extend_from_slice(&[0x88, 0xb5]);
+    frame.extend_from_slice(b"rawusb net test");
+    frame.resize(60, 0);
+    for _ in 0..4 {
+        nic.send(&frame).unwrap();
+    }
+    // Every frame size across a packet boundary goes through the padding
+    // logic of the three framings.
+    for len in [510, 511, 512, 513, 1024, nic.max_frame_size()] {
+        let mut big = frame.clone();
+        big.resize(len, 0x5a);
+        nic.send(&big).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let s = nic.stats();
+    eprintln!("{s:?}");
+    assert_eq!(s.tx_frames, 10);
+    assert_eq!(s.tx_dropped, 0);
+    assert!(nic.send(&frame[..10]).is_err(), "runt frames are refused");
+    nic.close().unwrap();
+    assert_eq!(nic.recv(Duration::from_millis(10)).unwrap_err().kind(), ErrorKind::NoDevice);
+}
+
+#[cfg(feature = "pktkit")]
+#[test]
+fn net_as_pktkit_device() {
+    use pktkit::L2Device;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Usable wherever pktkit takes a device.
+    fn takes_device(_: Arc<dyn L2Device>) {}
+    let Some((dev, _)) = env_device("RAWUSB_TEST_NET") else { return };
+    let nic = Arc::new(rawusb::net::NetDevice::open(&dev).unwrap());
+    let seen = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&seen);
+    nic.set_handler(Arc::new(move |f: &pktkit::Frame| {
+        assert!(f.src_mac().is_some());
+        counter.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }));
+    let start = std::time::Instant::now();
+    while seen.load(Ordering::Relaxed) == 0 && start.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(seen.load(Ordering::Relaxed) > 0, "no frame within 20 s");
+    assert_eq!(nic.hw_addr().0, nic.mac_address());
+    assert!(L2Device::stats(&*nic).unwrap().snapshot().rx_packets > 0);
+    takes_device(nic.clone());
+    L2Device::close(&*nic).unwrap();
 }

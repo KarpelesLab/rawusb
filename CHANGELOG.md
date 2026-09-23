@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `uvc`: `Camera` with format/frame/control descriptors and unit controls,
     and `Stream`, which negotiates, streams over isochronous or bulk
     endpoints and reassembles frames.
+- `net` feature: `NetDevice` drives CDC-ECM, CDC-NCM (16-bit transfer
+  blocks) and RNDIS functions, with a non-blocking send path, a receive
+  callback or queue, link state and counters; `net::interfaces` lists a
+  device's network functions.
+- `pktkit` feature: `NetDevice` implements `pktkit::L2Device`. This is the
+  only feature that adds a dependency.
 - `DeviceHandle::claim_all_interfaces` takes a whole device (detaching every
   kernel driver) so several class helpers can run on it; helpers lease
   their interfaces exclusively and borrow the handle's claims when present.

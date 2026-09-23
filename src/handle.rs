@@ -22,7 +22,7 @@ pub(crate) struct HandleShared {
     auto_detach: AtomicBool,
     /// Interfaces a class helper currently drives, so that two helpers can
     /// never share one.
-    #[cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+    #[cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
     leased: Mutex<Vec<u8>>,
 }
 
@@ -73,7 +73,7 @@ impl DeviceHandle {
                 claimed: Mutex::new(Vec::new()),
                 detached: Mutex::new(Vec::new()),
                 auto_detach: AtomicBool::new(false),
-                #[cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+                #[cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
                 leased: Mutex::new(Vec::new()),
             }),
         }
@@ -168,14 +168,14 @@ impl DeviceHandle {
     /// Claims an interface, detaching (and later re-attaching) a bound kernel
     /// driver whatever the auto-detach setting. The class helpers use this so
     /// they work out of the box without changing the caller's handle setting.
-    #[cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+    #[cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
     pub(crate) fn claim_interface_detaching(&self, interface: u8) -> Result<()> {
         self.claim(interface, true)
     }
 
     /// Reserves interfaces for one class helper. Fails with
     /// [`ErrorKind::Busy`] if another helper already drives one of them.
-    #[cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+    #[cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
     pub(crate) fn lease(&self, interfaces: &[u8]) -> Result<()> {
         let mut leased = self.shared.leased.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(i) = interfaces.iter().find(|i| leased.contains(i)) {
@@ -188,7 +188,7 @@ impl DeviceHandle {
         Ok(())
     }
 
-    #[cfg(any(feature = "hid", feature = "msc", feature = "serial", feature = "uvc"))]
+    #[cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
     pub(crate) fn unlease(&self, interfaces: &[u8]) {
         self.shared
             .leased

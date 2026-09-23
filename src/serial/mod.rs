@@ -276,7 +276,7 @@ enum Backend {
         comm: u8,
         /// The interrupt transfer that listens for SERIAL_STATE, resubmitted
         /// from its own callback until dropped.
-        _notify: Option<Notifications>,
+        _notify: Option<class::Repeating>,
     },
     Ftdi {
         chip: FtdiChip,
@@ -834,47 +834,22 @@ fn drain(rx: &mut VecDeque<u8>, buf: &mut [u8]) -> usize {
     n
 }
 
-/// A self-resubmitting interrupt transfer on the CDC notification endpoint.
-struct Notifications {
-    transfer: Transfer,
-    /// Set on drop. The callback checks it and resubmits under this lock, so
-    /// once the flag is set any resubmission already happened (and can be
-    /// cancelled) or never will.
-    stop: Arc<Mutex<bool>>,
-}
-
 /// Keeps an interrupt transfer queued on the CDC notification endpoint,
 /// folding SERIAL_STATE notifications into `status`.
-fn start_notifications(handle: &DeviceHandle, ep: u8, size: usize, status: Arc<Mutex<ModemStatus>>) -> Option<Notifications> {
+fn start_notifications(handle: &DeviceHandle, ep: u8, size: usize, status: Arc<Mutex<ModemStatus>>) -> Option<class::Repeating> {
     let transfer = Transfer::interrupt(handle, ep, vec![0u8; size.max(16)]);
-    let stop = Arc::new(Mutex::new(false));
-    let flag = Arc::clone(&stop);
-    transfer
-        .set_callback(move |t| {
-            if t.status() != TransferStatus::Completed {
-                return; // cancelled, unplugged, or stalled: stop listening
-            }
-            if let Ok(data) = t.data()
-                && let Some(s) = cdc::decode_serial_state(&data)
-            {
-                lock(&status).update(s);
-            }
-            let stopped = lock(&flag);
-            if !*stopped {
-                let _ = t.submit();
-            }
-        })
-        .ok()?;
-    transfer.submit().ok()?;
-    Some(Notifications { transfer, stop })
-}
-
-impl Drop for Notifications {
-    fn drop(&mut self) {
-        *lock(&self.stop) = true;
-        let _ = self.transfer.cancel();
-        let _ = self.transfer.wait(Some(Duration::from_secs(1)));
-    }
+    class::Repeating::start(transfer, move |t| {
+        if t.status() != TransferStatus::Completed {
+            return false; // cancelled, unplugged, or stalled: stop listening
+        }
+        if let Ok(data) = t.data()
+            && let Some(s) = cdc::decode_serial_state(&data)
+        {
+            lock(&status).update(s);
+        }
+        true
+    })
+    .ok()
 }
 
 impl io::Read for &SerialPort {

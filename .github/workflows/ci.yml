@@ -47,7 +47,7 @@ jobs:
       - name: Clippy (each feature alone)
         shell: bash
         run: |
-          for f in hotplug hid msc serial uvc; do
+          for f in hotplug hid msc net pktkit serial uvc; do
             cargo clippy --all-targets --features "$f" -- -D warnings
           done
 

@@ -7,7 +7,8 @@
 Dependency-free, cross-platform USB device access for Rust, in the spirit of
 libusb. `rawusb` talks to each operating system's native USB stack directly:
 usbfs on Linux, WinUSB on Windows and IOKit on macOS. There are no external
-crates, no C library to install, and no build script.
+crates (except the opt-in `pktkit` integration), no C library to install, and
+no build script.
 
 - **Enumeration and descriptors** without opening or having permissions on a
   device: device, configuration, interface, endpoint, interface association
@@ -23,7 +24,9 @@ crates, no C library to install, and no build script.
   arrive and leave, filtered by vendor, product or class, as a callback or a
   queue you pull from.
 - **Class helpers** (optional, one feature each): HID, mass storage, USB
-  serial (CDC-ACM and FTDI) and USB video, ready to use. See below.
+  serial (CDC-ACM and FTDI), USB video and USB Ethernet (with
+  [pktkit](https://crates.io/crates/pktkit) integration), ready to use. See
+  below.
 - One background event thread per [`Context`] drives completion, so callers
   never have to pump events.
 
@@ -105,6 +108,8 @@ rawusb = { version = "0.1", features = ["serial", "hid"] }
 | `msc` | `rawusb::msc` | `MassStorage`: SCSI over the bulk-only transport with the spec's error recovery (INQUIRY, READ CAPACITY, READ/WRITE 10/16, REQUEST SENSE, write-protect, eject, ...); `BlockDevice`: a logical unit as `Read + Write + Seek`. |
 | `serial` | `rawusb::serial` | `SerialPort` for CDC-ACM devices and FTDI chips (AM through FT4232HA, with the Linux driver's baud divisors): line settings, flow control, DTR/RTS, break, modem status, `std::io::Read`/`Write`, FTDI latency timer and bit modes. |
 | `uvc` | `rawusb::uvc` | `Camera`: formats, frame sizes and rates, camera and processing-unit controls; `Stream`: probe/commit negotiation, isochronous or bulk streaming, frames reassembled from payloads. |
+| `net` | `rawusb::net` | `NetDevice` for CDC-ECM, CDC-NCM and RNDIS functions (phone tethering, gadget-mode boards, docks, LTE modems): MAC address, link state, non-blocking send, receive through a callback or a queue, promiscuous mode, counters. |
+| `pktkit` | `rawusb::net` | Implies `net`; `NetDevice` implements `pktkit::L2Device`, so a USB adapter plugs straight into a pktkit hub, NAT or virtual TCP/IP stack. |
 
 ```rust
 use rawusb::serial::{LineConfig, SerialPort};
@@ -143,6 +148,21 @@ macOS and Windows these drivers cannot be displaced, so the helpers only work
 with devices bound to a generic driver (WinUSB on Windows); there, prefer the
 operating system's own HID, storage, serial and camera APIs for devices that
 keep their class driver.
+
+With `pktkit`, a USB adapter is just another L2 device:
+
+```rust
+use pktkit::L2Device;
+use std::sync::Arc;
+
+let nic: Arc<dyn L2Device> = Arc::new(rawusb::net::NetDevice::open(&dev)?);
+println!("MAC {}", nic.hw_addr());
+// ...connect it to an L2Hub, an L2Adapter, a NAT, a WireGuard tunnel...
+```
+
+Received frames reach the pktkit handler on rawusb's event thread,
+borrowed from the transfer buffer, and `send` never blocks, so bridging two
+USB adapters through a hub is safe.
 
 Examples: `hid_dump`, `msc_info`, `serial_monitor` and `uvc_capture`, each
 run with its feature, e.g. `cargo run --features uvc --example uvc_capture`.
@@ -188,7 +208,7 @@ but have had less real-device time; bug reports with the failing call are
 welcome. The Linux hotplug backend is exercised against real kernel uevents;
 the Windows and macOS ones are compile-checked only. Of the class helpers,
 HID and FTDI serial have run against real devices on Linux; the mass-storage,
-CDC-ACM and UVC helpers are covered by unit tests of their protocol logic
+CDC-ACM, UVC and network helpers are covered by unit tests of their protocol logic
 and by hardware tests (`tests/classes.rs`) waiting for a device to run on.
 
 ## License
