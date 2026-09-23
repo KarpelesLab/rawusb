@@ -22,6 +22,10 @@ use rawusb::{Context, Device, ErrorKind};
 #[allow(unused_imports)]
 use std::time::Duration;
 
+/// Tests here take devices away from their kernel drivers; two tests on the
+/// same device must not run at once.
+static DEVICES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn env_device(var: &str) -> Option<(Device, Vec<String>)> {
     let spec = std::env::var(var).ok()?;
     let parts: Vec<String> = spec.split(':').map(str::to_string).collect();
@@ -43,6 +47,7 @@ fn env_device(var: &str) -> Option<(Device, Vec<String>)> {
 #[test]
 fn hid_report_descriptor_and_input() {
     use rawusb::hid::{HidDevice, ReportType};
+    let _serial = DEVICES.lock().unwrap_or_else(|e| e.into_inner());
     let Some((dev, _)) = env_device("RAWUSB_TEST_HID") else { return };
     let hid = HidDevice::open(&dev).unwrap();
     let d = hid.report_descriptor();
@@ -85,6 +90,7 @@ fn hid_report_descriptor_and_input() {
 fn msc_inquiry_capacity_and_read() {
     use rawusb::msc::{DataPhase, MassStorage};
     use std::io::{Read, Seek, SeekFrom};
+    let _serial = DEVICES.lock().unwrap_or_else(|e| e.into_inner());
     let Some((dev, _)) = env_device("RAWUSB_TEST_MSC") else { return };
     let msc = MassStorage::open(&dev).unwrap();
     let info = msc.inquiry(0).unwrap();
@@ -135,6 +141,7 @@ fn msc_inquiry_capacity_and_read() {
 #[test]
 fn serial_configuration() {
     use rawusb::serial::{DataBits, FlowControl, LineConfig, Parity, SerialKind, SerialPort, StopBits};
+    let _serial = DEVICES.lock().unwrap_or_else(|e| e.into_inner());
     let Some((dev, rest)) = env_device("RAWUSB_TEST_SERIAL") else {
         return;
     };
@@ -202,6 +209,7 @@ fn serial_configuration() {
 #[test]
 fn uvc_capture() {
     use rawusb::uvc::{Camera, ControlRequest, FormatKind};
+    let _serial = DEVICES.lock().unwrap_or_else(|e| e.into_inner());
     let Some((dev, _)) = env_device("RAWUSB_TEST_UVC") else { return };
     let cam = Camera::open(&dev).unwrap();
     let vc = cam.control_interface();
@@ -260,6 +268,7 @@ fn uvc_capture() {
 #[test]
 fn hid_on_a_taken_device() {
     use rawusb::hid::{self, HidDevice};
+    let _serial = DEVICES.lock().unwrap_or_else(|e| e.into_inner());
     let Some((dev, _)) = env_device("RAWUSB_TEST_HID") else { return };
     let handle = dev.open().unwrap();
     handle.claim_all_interfaces().unwrap();
@@ -303,6 +312,7 @@ fn hid_on_a_taken_device() {
 #[test]
 fn net_send_and_receive() {
     use rawusb::net::{self, NetDevice};
+    let _serial = DEVICES.lock().unwrap_or_else(|e| e.into_inner());
     let Some((dev, _)) = env_device("RAWUSB_TEST_NET") else { return };
     eprintln!("functions: {:?}", net::interfaces(&dev).unwrap());
     let nic = NetDevice::open(&dev).unwrap();
@@ -351,6 +361,7 @@ fn net_as_pktkit_device() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     // Usable wherever pktkit takes a device.
     fn takes_device(_: Arc<dyn L2Device>) {}
+    let _serial = DEVICES.lock().unwrap_or_else(|e| e.into_inner());
     let Some((dev, _)) = env_device("RAWUSB_TEST_NET") else { return };
     let nic = Arc::new(rawusb::net::NetDevice::open(&dev).unwrap());
     let seen = Arc::new(AtomicUsize::new(0));

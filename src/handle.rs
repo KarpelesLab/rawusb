@@ -24,6 +24,8 @@ pub(crate) struct HandleShared {
     /// never share one.
     #[cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
     leased: Mutex<Vec<u8>>,
+    /// The language string descriptors are read in, once known.
+    string_language: Mutex<Option<u16>>,
 }
 
 impl Drop for HandleShared {
@@ -75,6 +77,7 @@ impl DeviceHandle {
                 auto_detach: AtomicBool::new(false),
                 #[cfg(any(feature = "hid", feature = "msc", feature = "net", feature = "serial", feature = "uvc"))]
                 leased: Mutex::new(Vec::new()),
+                string_language: Mutex::new(None),
             }),
         }
     }
@@ -387,11 +390,31 @@ impl DeviceHandle {
         )
     }
 
+    /// Fetches a raw string descriptor the way the Linux kernel does: ask
+    /// for the largest possible descriptor, and if the device stalls that or
+    /// sends less than a header, read the 2-byte header and then exactly the
+    /// length it declares. Returns the bytes received, trimmed to `bLength`.
+    fn read_string_raw(&self, index: u8, language_id: u16, timeout: Duration) -> Result<Vec<u8>> {
+        let mut buf = [0u8; 255];
+        let n = match self.read_descriptor(descriptor_type::STRING, index, language_id, &mut buf, timeout) {
+            Ok(n) if n >= 2 => n,
+            Err(e) if !e.is_stall() => return Err(e),
+            _ => {
+                let mut head = [0u8; 2];
+                let got = self.read_descriptor(descriptor_type::STRING, index, language_id, &mut head, timeout)?;
+                if got < 2 || head[0] < 2 {
+                    return Err(Error::with_message(ErrorKind::Io, "string descriptor too short"));
+                }
+                let want = head[0] as usize;
+                self.read_descriptor(descriptor_type::STRING, index, language_id, &mut buf[..want], timeout)?
+            }
+        };
+        Ok(buf[..n.min(buf[0].max(2) as usize)].to_vec())
+    }
+
     /// The language IDs the device offers string descriptors in.
     pub fn read_languages(&self, timeout: Duration) -> Result<Vec<u16>> {
-        let mut buf = [0u8; 255];
-        let n = self.read_descriptor(descriptor_type::STRING, 0, 0, &mut buf, timeout)?;
-        decode_language_ids(&buf[..n])
+        decode_language_ids(&self.read_string_raw(0, 0, timeout)?)
     }
 
     /// Reads a string descriptor in the given language.
@@ -399,18 +422,30 @@ impl DeviceHandle {
         if index == 0 {
             return Err(Error::with_message(ErrorKind::InvalidParam, "string index 0 is the language table"));
         }
-        let mut buf = [0u8; 255];
-        let n = self.read_descriptor(descriptor_type::STRING, index, language_id, &mut buf, timeout)?;
-        decode_string_descriptor(&buf[..n])
+        decode_string_descriptor(&self.read_string_raw(index, language_id, timeout)?)
+    }
+
+    /// The language [`read_string`](Self::read_string) uses: the device's
+    /// first one, read once per handle. A device whose language table is
+    /// empty or malformed gets US English (0x0409), as the Linux kernel
+    /// assumes; one that cannot return the table at all gets the error.
+    fn string_language(&self) -> Result<u16> {
+        if let Some(lang) = *self.shared.string_language.lock().unwrap_or_else(|e| e.into_inner()) {
+            return Ok(lang);
+        }
+        let lang = match self.read_languages(STRING_TIMEOUT) {
+            Ok(langs) => langs.first().copied().unwrap_or(0x0409),
+            Err(e) if e.kind() == ErrorKind::Io => 0x0409,
+            Err(e) => return Err(e),
+        };
+        *self.shared.string_language.lock().unwrap_or_else(|e| e.into_inner()) = Some(lang);
+        Ok(lang)
     }
 
     /// Reads a string descriptor in the device's first language, as
     /// `libusb_get_string_descriptor_ascii` does (but returns full Unicode).
     pub fn read_string(&self, index: u8) -> Result<String> {
-        let langs = self.read_languages(STRING_TIMEOUT)?;
-        let lang = *langs
-            .first()
-            .ok_or_else(|| Error::with_message(ErrorKind::Io, "device reports no string languages"))?;
+        let lang = self.string_language()?;
         self.read_string_descriptor(lang, index, STRING_TIMEOUT)
     }
 

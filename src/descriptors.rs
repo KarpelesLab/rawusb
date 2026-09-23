@@ -464,13 +464,23 @@ impl EndpointDescriptor {
 
 /// Decodes a string descriptor (type 3) payload into a Rust string.
 ///
+/// The string ends at `bLength` or at the first NUL character, whichever
+/// comes first: devices programmed from an EEPROM (FTDI clones notably)
+/// often declare a longer descriptor holding a NUL-terminated string
+/// followed by leftover bytes, which the Linux kernel also cuts at the NUL.
 /// Malformed UTF-16 code units are replaced with U+FFFD.
 pub fn decode_string_descriptor(data: &[u8]) -> Result<String> {
     if data.len() < 2 || data[1] != descriptor_type::STRING {
         return Err(Error::with_message(ErrorKind::Io, "not a string descriptor"));
     }
     let len = (data[0] as usize).min(data.len());
-    let units: Vec<u16> = data[2..len].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+    let units: Vec<u16> = data[2..len]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .take_while(|&u| u != 0)
+        .collect();
     Ok(String::from_utf16_lossy(&units))
 }
 
@@ -486,6 +496,19 @@ pub fn decode_language_ids(data: &[u8]) -> Result<Vec<u16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_descriptor_stops_at_nul() {
+        // A Sipeed FT2232D clone's serial number, verbatim: bLength 48, a
+        // NUL-terminated string, then leftover EEPROM bytes.
+        let raw = [
+            0x30, 0x03, 0x46, 0, 0x61, 0, 0x63, 0, 0x74, 0, 0x6f, 0, 0x72, 0, 0x79, 0, 0x41, 0, 0x49, 0, 0x4f, 0, 0x54, 0, 0x20, 0, 0x50,
+            0, 0x72, 0, 0x6f, 0, 0, 0, 0x11, 0, 0x22, 0, 0x33, 0, 0x44, 0, 0x55, 0, 0x61, 0, 0x6c, 0,
+        ];
+        assert_eq!(decode_string_descriptor(&raw).unwrap(), "FactoryAIOT Pro");
+        // bLength still bounds a string without NUL.
+        assert_eq!(decode_string_descriptor(&[6, 3, b'a', 0, b'b', 0, b'c', 0]).unwrap(), "ab");
+    }
 
     // A CDC-ACM style device: config with IAD, two interfaces, three endpoints,
     // one class-specific descriptor on the first interface.

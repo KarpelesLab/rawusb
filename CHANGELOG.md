@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- String descriptors end at the first NUL character. Some devices (an
+  FT2232D clone here) declare a longer descriptor holding a NUL-terminated
+  string followed by leftover EEPROM bytes, which came back as garbage
+  appended to the serial number; Linux cuts at the NUL too.
+- String reads follow the Linux kernel's recovery: if a device stalls the
+  full-size request or answers it short, the 2-byte header is read and then
+  exactly the declared length. A malformed or empty language table falls
+  back to US English, and the language is read once per handle instead of
+  before every string.
+- The hardware tests no longer probe a nonexistent string index on every
+  attached device: some FTDI clones stall all requests after that until
+  they are reset. The check now runs only on the nominated bulk-IN device.
+
 ## [0.1.2](https://github.com/KarpelesLab/rawusb/compare/v0.1.1...v0.1.2) - 2026-09-23
 
 ### Other

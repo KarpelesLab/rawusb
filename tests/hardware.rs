@@ -105,11 +105,9 @@ fn open_and_read_strings() {
         let wire = rawusb::DeviceDescriptor::from_bytes(&buf).unwrap();
         assert_eq!(wire.vendor_id, d.vendor_id);
         assert_eq!(wire.product_id, d.product_id);
-        // A bogus string index must come back as a stall, not hang.
-        let err = h.read_string_descriptor(0x0409, 250, Duration::from_millis(500));
-        if let Err(e) = err {
-            assert!(matches!(e.kind(), ErrorKind::Pipe | ErrorKind::Io | ErrorKind::Timeout), "{e:?}");
-        }
+        // Only requests the descriptors advertise are sent to devices nobody
+        // nominated: some FTDI clones stall every request after being asked
+        // for a string they do not have, until they are reset.
     }
     eprintln!("opened {opened} devices");
 }
@@ -236,6 +234,13 @@ fn bulk_in_timeout_cancel_and_future() {
     h.set_auto_detach_kernel_driver(true);
     h.claim_interface(0).unwrap();
     assert_eq!(h.claimed_interfaces(), vec![0]);
+
+    // A string index the device does not have must come back as a stall,
+    // not hang. (Nominated device only; see open_and_read_strings.)
+    let err = h.read_string_descriptor(0x0409, 250, Duration::from_millis(500));
+    if let Err(e) = err {
+        assert!(matches!(e.kind(), ErrorKind::Pipe | ErrorKind::Io | ErrorKind::Timeout), "{e:?}");
+    }
 
     // Synchronous read: nothing arrives, so the timeout fires.
     let mut buf = [0u8; 512];
