@@ -22,6 +22,8 @@ crates, no C library to install, and no build script.
 - **Hotplug notifications** (optional `hotplug` feature): learn when devices
   arrive and leave, filtered by vendor, product or class, as a callback or a
   queue you pull from.
+- **Class helpers** (optional, one feature each): HID, mass storage, USB
+  serial (CDC-ACM and FTDI) and USB video, ready to use. See below.
 - One background event thread per [`Context`] drives completion, so callers
   never have to pump events.
 
@@ -88,6 +90,46 @@ t.submit()?;
 // let status = t.completion().await;
 ```
 
+## Class helpers
+
+Each helper is behind its own cargo feature, so you only compile what you
+use:
+
+```toml
+rawusb = { version = "0.1", features = ["serial", "hid"] }
+```
+
+| Feature | Module | What you get |
+|---|---|---|
+| `hid` | `rawusb::hid` | `HidDevice`: input/output/feature reports with hidapi's report-ID conventions, idle and protocol requests; `ReportDescriptor`: a parser that gives each field's offset, size, usages and logical range. |
+| `msc` | `rawusb::msc` | `MassStorage`: SCSI over the bulk-only transport with the spec's error recovery (INQUIRY, READ CAPACITY, READ/WRITE 10/16, REQUEST SENSE, write-protect, eject, ...); `BlockDevice`: a logical unit as `Read + Write + Seek`. |
+| `serial` | `rawusb::serial` | `SerialPort` for CDC-ACM devices and FTDI chips (AM through FT4232HA, with the Linux driver's baud divisors): line settings, flow control, DTR/RTS, break, modem status, `std::io::Read`/`Write`, FTDI latency timer and bit modes. |
+| `uvc` | `rawusb::uvc` | `Camera`: formats, frame sizes and rates, camera and processing-unit controls; `Stream`: probe/commit negotiation, isochronous or bulk streaming, frames reassembled from payloads. |
+
+```rust
+use rawusb::serial::{LineConfig, SerialPort};
+use std::io::Write;
+
+let ctx = rawusb::Context::new()?;
+let dev = ctx.find_device(0x0403, 0x6001)?.expect("adapter not plugged in");
+let mut port = SerialPort::open(&dev)?;
+port.set_line_config(&LineConfig::new(115_200))?;
+port.write_all(b"hello\r\n")?;
+```
+
+A helper claims the interfaces it drives for as long as it lives. On Linux
+the kernel driver (usbhid, usb-storage, ftdi_sio, cdc_acm, uvcvideo) is
+detached meanwhile and re-attached when the helper is dropped, so the
+matching `/dev` node disappears in between; a process that is killed before
+dropping it leaves the driver detached until the device is replugged. On
+macOS and Windows these drivers cannot be displaced, so the helpers only work
+with devices bound to a generic driver (WinUSB on Windows); there, prefer the
+operating system's own HID, storage, serial and camera APIs for devices that
+keep their class driver.
+
+Examples: `hid_dump`, `msc_info`, `serial_monitor` and `uvc_capture`, each
+run with its feature, e.g. `cargo run --features uvc --example uvc_capture`.
+
 ## Platform notes
 
 | | Linux | Windows | macOS |
@@ -127,7 +169,10 @@ nominated through the environment). The Windows and macOS backends are
 compiled on every target in CI and follow libusb's proven call sequences,
 but have had less real-device time; bug reports with the failing call are
 welcome. The Linux hotplug backend is exercised against real kernel uevents;
-the Windows and macOS ones are compile-checked only.
+the Windows and macOS ones are compile-checked only. Of the class helpers,
+HID and FTDI serial have run against real devices on Linux; the mass-storage,
+CDC-ACM and UVC helpers are covered by unit tests of their protocol logic
+and by hardware tests (`tests/classes.rs`) waiting for a device to run on.
 
 ## License
 

@@ -43,6 +43,14 @@ jobs:
       - name: Clippy (no default features)
         run: cargo clippy --all-targets -- -D warnings
 
+      # Each class helper must build on its own, without the others.
+      - name: Clippy (each feature alone)
+        shell: bash
+        run: |
+          for f in hotplug hid msc serial uvc; do
+            cargo clippy --all-targets --features "$f" -- -D warnings
+          done
+
       # Hosted runners have no USB devices; the hardware tests skip themselves
       # when enumeration comes back empty (or is denied).
       - name: Test (all features)

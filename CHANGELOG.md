@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Class helpers, each behind its own opt-in feature:
+  - `hid`: `HidDevice` (report I/O with hidapi's report-ID conventions,
+    GET/SET_REPORT, idle and protocol requests) and `ReportDescriptor`, a
+    report descriptor parser that yields every field's offset, size,
+    usages and logical range.
+  - `msc`: `MassStorage`, SCSI over the bulk-only transport with stall and
+    reset recovery, sense decoding and UNIT ATTENTION retries, and
+    `BlockDevice`, a `Read + Write + Seek` view of a logical unit.
+  - `serial`: `SerialPort` for CDC-ACM devices and FTDI chips, with line
+    settings, flow control, modem lines and status, break, purging,
+    `std::io::Read`/`Write`, and FTDI chip detection, baud divisors, latency
+    timer and bit modes.
+  - `uvc`: `Camera` with format/frame/control descriptors and unit controls,
+    and `Stream`, which negotiates, streams over isochronous or bulk
+    endpoints and reassembles frames.
+- `hid_dump`, `msc_info`, `serial_monitor` and `uvc_capture` examples, and a
+  class-helper hardware test suite driven by environment variables.
+
 ## [0.1.1](https://github.com/KarpelesLab/rawusb/compare/v0.1.0...v0.1.1) - 2026-09-22
 
 ### Other

@@ -49,6 +49,22 @@ uvc = []
 name = "hotplug"
 required-features = ["hotplug"]
 
+[[example]]
+name = "hid_dump"
+required-features = ["hid"]
+
+[[example]]
+name = "msc_info"
+required-features = ["msc"]
+
+[[example]]
+name = "serial_monitor"
+required-features = ["serial"]
+
+[[example]]
+name = "uvc_capture"
+required-features = ["uvc"]
+
 [dependencies]
 
 [lints.rust]

@@ -22,8 +22,20 @@
 //!
 //! # Features
 //!
-//! - `hotplug` (off by default) adds the [`hotplug`] module, which reports
-//!   devices arriving and leaving. See [`Context::hotplug`].
+//! Everything below is off by default.
+//!
+//! - `hotplug` adds the [`hotplug`] module, which reports devices arriving
+//!   and leaving. See [`Context::hotplug`].
+//!
+//! Class helpers, ready-made drivers for common device classes built on the
+//! public API above. Each claims the interfaces it needs (detaching the
+//! kernel driver on Linux) and gives them back when dropped:
+//!
+//! - `hid`: [`hid::HidDevice`] and a report descriptor parser.
+//! - `msc`: [`msc::MassStorage`] (bulk-only transport, SCSI commands) and a
+//!   `Read + Write + Seek` [`msc::BlockDevice`].
+//! - `serial`: [`serial::SerialPort`] for CDC-ACM devices and FTDI chips.
+//! - `uvc`: [`uvc::Camera`] for webcams: formats, controls, frame streaming.
 //!
 //! # Example
 //!

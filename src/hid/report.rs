@@ -87,8 +87,15 @@ pub fn items(descriptor: &[u8]) -> impl Iterator<Item = Item<'_>> {
 }
 
 /// A 32-bit usage: usage page in the high half, usage ID in the low half.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Formats as `page:id` in hex.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Usage(pub u32);
+
+impl std::fmt::Debug for Usage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:04x}:{:04x}", self.page(), self.id())
+    }
+}
 
 impl Usage {
     /// Builds a usage from its page and ID.
