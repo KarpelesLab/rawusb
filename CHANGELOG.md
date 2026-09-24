@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/KarpelesLab/rawusb/compare/v0.1.3...v0.1.4) - 2026-09-24
+
+### Other
+
+- Add Device::serial_number and lookup by vid/pid list + serial
+
 ### Added
 - `Device::serial_number` returns the serial number without opening the
   device: from sysfs on Linux, the IOKit registry on macOS, and the parent
