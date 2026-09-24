@@ -76,6 +76,28 @@ impl Device {
         self.info.device_descriptor.product_id
     }
 
+    /// The serial number string as the operating system knows it, without
+    /// opening the device.
+    ///
+    /// Linux and macOS return the string the kernel read when the device
+    /// arrived; Windows asks the device through its parent hub, which works
+    /// whatever driver it is bound to. The answer is kept for the life of
+    /// this `Device`. `None` means the device has no serial number
+    /// (`iSerialNumber` is 0) or the OS could not tell; in the latter case
+    /// [`DeviceHandle::read_serial_number_string`] may still work.
+    pub fn serial_number(&self) -> Option<&str> {
+        self.info
+            .serial_number
+            .get_or_init(|| {
+                if self.info.device_descriptor.serial_number_string_index == 0 {
+                    None
+                } else {
+                    sys::read_serial_number(&self.info)
+                }
+            })
+            .as_deref()
+    }
+
     /// Number of configuration descriptors that were readable at enumeration.
     pub fn num_configurations(&self) -> u8 {
         self.info.configs.len() as u8

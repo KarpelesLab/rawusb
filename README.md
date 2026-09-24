@@ -46,6 +46,8 @@ fn main() -> rawusb::Result<()> {
     }
 
     let handle = ctx.open_device_with_vid_pid(0x1234, 0x5678)?;
+    // Or, to pick one of several identical devices:
+    // let handle = ctx.open_device_by_serial(&[(0x1234, 0x5678)], "A1B2C3")?;
     handle.set_auto_detach_kernel_driver(true);
     handle.claim_interface(0)?;
 

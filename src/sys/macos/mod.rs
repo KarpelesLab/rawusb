@@ -234,6 +234,8 @@ impl DeviceRef {
 /// Where a device lives: its shared IOKit object.
 pub(crate) struct Location {
     dev: Arc<DeviceRef>,
+    /// The `USB Serial Number` registry property, read at enumeration.
+    serial: Option<String>,
 }
 
 // ----- context & event thread ---------------------------------------------------------------
@@ -466,6 +468,7 @@ impl Context {
             configs.push(raw);
         }
         let active_config = Some(prop!(dev.obj, GetConfiguration, u8));
+        let serial = registry_string(service, c"USB Serial Number");
 
         Some(DeviceInfo {
             bus_number,
@@ -475,7 +478,8 @@ impl Context {
             device_descriptor,
             configs,
             active_config,
-            location: Location { dev },
+            location: Location { dev, serial },
+            serial_number: Default::default(),
         })
     }
 
@@ -667,6 +671,38 @@ impl Drop for Hotplug {
             CFRelease(self.rl);
         }
     }
+}
+
+/// Reads a string property from a registry entry.
+fn registry_string(entry: io_registry_entry_t, key: &CStr) -> Option<String> {
+    // SAFETY: valid NUL-terminated key; every object created here is
+    // released before returning.
+    unsafe {
+        let key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), kCFStringEncodingUTF8);
+        if key.is_null() {
+            return None;
+        }
+        let value = IORegistryEntryCreateCFProperty(entry, key, std::ptr::null(), 0);
+        CFRelease(key);
+        if value.is_null() {
+            return None;
+        }
+        let mut out = None;
+        if CFGetTypeID(value) == CFStringGetTypeID() {
+            let size = CFStringGetMaximumSizeForEncoding(CFStringGetLength(value), kCFStringEncodingUTF8) + 1;
+            let mut buf = vec![0u8; size.max(1) as usize];
+            if CFStringGetCString(value, buf.as_mut_ptr() as *mut _, buf.len() as CFIndex, kCFStringEncodingUTF8) != 0 {
+                out = CStr::from_bytes_until_nul(&buf).ok().map(|s| s.to_string_lossy().into_owned());
+            }
+        }
+        CFRelease(value);
+        out
+    }
+}
+
+/// The serial number IOKit read when the device arrived.
+pub(crate) fn read_serial_number(info: &DeviceInfo) -> Option<String> {
+    info.location.serial.clone()
 }
 
 fn matching_services(class: &CStr) -> Vec<io_service_t> {

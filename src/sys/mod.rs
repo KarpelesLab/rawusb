@@ -7,7 +7,9 @@
 //!   Result<Vec<DeviceInfo>>`, `open(&self, &Arc<DeviceInfo>) -> Result<Arc<Handle>>`.
 //! - `DeviceInfo`: the enumeration snapshot with its public fields
 //!   (`bus_number`, `address`, `port_numbers`, `speed`, `device_descriptor`,
-//!   `configs`, `active_config`).
+//!   `configs`, `active_config`, `serial_number`).
+//! - `read_serial_number(&DeviceInfo) -> Option<String>`: the serial number
+//!   string as the OS knows it, without opening the device.
 //! - `Handle`: configuration/interface operations, `submit`, `cancel`,
 //!   `cancel_all`.
 //! - `Context::watch_hotplug(&Arc<Self>, notify)` with the `hotplug` feature:
@@ -33,6 +35,9 @@ pub(crate) struct DeviceInfo {
     pub(crate) active_config: Option<u8>,
     /// Backend-specific locator used to open the device.
     pub(crate) location: Location,
+    /// The serial number string, looked up on first use by
+    /// `read_serial_number`.
+    pub(crate) serial_number: std::sync::OnceLock<Option<String>>,
 }
 
 /// Callback the neutral layer installs so a backend can report that the set

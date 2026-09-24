@@ -113,6 +113,36 @@ fn open_and_read_strings() {
 }
 
 #[test]
+fn find_by_serial() {
+    let Some(ctx) = context() else { return };
+    let devs = devices(&ctx);
+    let key = |d: &Device| (d.vendor_id(), d.product_id(), d.serial_number().map(str::to_owned));
+    for dev in &devs {
+        let Some(serial) = dev.serial_number() else { continue };
+        assert_ne!(dev.device_descriptor().serial_number_string_index, 0);
+        let ids = [(0xffff, 0xffff), (dev.vendor_id(), dev.product_id())];
+        let found = ctx
+            .find_device_by_serial(&ids, serial)
+            .unwrap()
+            .expect("device not found by its serial");
+        // Identical devices sharing a serial would make the pick ambiguous.
+        if devs.iter().filter(|d| key(d) == key(dev)).count() == 1 {
+            assert_eq!(&found, dev);
+            // Opening alone sends nothing to the device.
+            if !dev.port_numbers().is_empty()
+                && let Ok(h) = ctx.open_device_by_serial(&ids, serial)
+            {
+                assert_eq!(h.device(), dev);
+            }
+        }
+        assert!(ctx.find_device_by_serial(&[(0xffff, 0xffff)], serial).unwrap().is_none());
+    }
+    assert!(ctx.find_device_by_serial(&[], "no such serial \u{1}").unwrap().is_none());
+    let err = ctx.open_device_by_serial(&[], "no such serial \u{1}").unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[test]
 fn concurrent_control_transfers() {
     let Some(ctx) = context() else { return };
     let Some(dev) = devices(&ctx)

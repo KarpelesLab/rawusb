@@ -34,9 +34,13 @@ pub(crate) type CFRunLoopTimerRef = *mut c_void;
 pub(crate) type CFAbsoluteTime = f64;
 pub(crate) type CFTimeInterval = f64;
 pub(crate) type CFIndex = isize;
+pub(crate) type CFTypeID = usize;
+pub(crate) type CFStringEncoding = u32;
 pub(crate) type Boolean = u8;
 pub(crate) type HRESULT = i32;
 pub(crate) type IOOptionBits = u32;
+
+pub(crate) const kCFStringEncodingUTF8: CFStringEncoding = 0x0800_0100;
 
 pub(crate) const kIOReturnSuccess: IOReturn = 0;
 pub(crate) const kIOReturnNoMemory: IOReturn = 0xe00002bdu32 as i32;
@@ -285,6 +289,13 @@ unsafe extern "C" {
     pub(crate) fn IOIteratorNext(iterator: io_iterator_t) -> io_object_t;
     pub(crate) fn IOObjectRelease(object: io_object_t) -> kern_return_t;
     pub(crate) fn IORegistryEntryGetRegistryEntryID(entry: io_registry_entry_t, entryID: *mut u64) -> kern_return_t;
+    /// Returns a new reference, or null when the property is absent.
+    pub(crate) fn IORegistryEntryCreateCFProperty(
+        entry: io_registry_entry_t,
+        key: CFStringRef,
+        allocator: CFAllocatorRef,
+        options: IOOptionBits,
+    ) -> CFTypeRef;
     pub(crate) fn IORegistryEntryGetChildEntry(
         entry: io_registry_entry_t,
         plane: *const c_char,
@@ -316,6 +327,17 @@ unsafe extern "C" {
     pub(crate) static kCFRunLoopDefaultMode: CFStringRef;
     pub(crate) fn CFRelease(cf: CFTypeRef);
     pub(crate) fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
+    pub(crate) fn CFGetTypeID(cf: CFTypeRef) -> CFTypeID;
+    pub(crate) fn CFStringGetTypeID() -> CFTypeID;
+    pub(crate) fn CFStringCreateWithCString(alloc: CFAllocatorRef, cStr: *const c_char, encoding: CFStringEncoding) -> CFStringRef;
+    pub(crate) fn CFStringGetLength(theString: CFStringRef) -> CFIndex;
+    pub(crate) fn CFStringGetMaximumSizeForEncoding(length: CFIndex, encoding: CFStringEncoding) -> CFIndex;
+    pub(crate) fn CFStringGetCString(
+        theString: CFStringRef,
+        buffer: *mut c_char,
+        bufferSize: CFIndex,
+        encoding: CFStringEncoding,
+    ) -> Boolean;
     pub(crate) fn CFUUIDGetConstantUUIDWithBytes(
         alloc: CFAllocatorRef,
         b0: u8,

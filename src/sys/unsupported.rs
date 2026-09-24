@@ -10,6 +10,10 @@ pub(crate) struct Location;
 
 pub(crate) struct Context;
 
+pub(crate) fn read_serial_number(_info: &DeviceInfo) -> Option<String> {
+    None
+}
+
 impl Context {
     pub(crate) fn new() -> Result<Arc<Self>> {
         Err(Error::with_message(

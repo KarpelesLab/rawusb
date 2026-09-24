@@ -428,7 +428,17 @@ fn read_sysfs_device(name: &str, path: PathBuf) -> Option<DeviceInfo> {
             sysfs: path,
             devnode: PathBuf::from(format!("{DEVFS_ROOT}/{bus_number:03}/{address:03}")),
         },
+        serial_number: Default::default(),
     })
+}
+
+/// The serial number the kernel read when the device arrived, from sysfs.
+pub(crate) fn read_serial_number(info: &DeviceInfo) -> Option<String> {
+    let mut s = std::fs::read_to_string(info.location.sysfs.join("serial")).ok()?;
+    if s.ends_with('\n') {
+        s.pop();
+    }
+    Some(s)
 }
 
 // ----- handle --------------------------------------------------------------------

@@ -701,6 +701,29 @@ fn hub_config_descriptors(hub: &OwnedHandle, port: u32, count: u8) -> Vec<Vec<u8
     out
 }
 
+/// Reads the serial number string through the parent hub, so that it works
+/// whatever driver the device is bound to. Uses the device's first language,
+/// or US English when its language table is empty.
+pub(crate) fn read_serial_number(info: &DeviceInfo) -> Option<String> {
+    let index = info.device_descriptor.serial_number_string_index;
+    if index == 0 {
+        return None;
+    }
+    let hub = open_hub(info.location.hub_path.as_deref()?).ok()?;
+    let port = info.location.port;
+    let string = (descriptor_type::STRING as u16) << 8;
+    let mut buf = [0u8; 255];
+    let lang = match hub_get_descriptor(&hub, port, string, 0, &mut buf) {
+        Ok(n) => crate::descriptors::decode_language_ids(&buf[..n])
+            .ok()
+            .and_then(|l| l.first().copied())
+            .unwrap_or(0x0409),
+        Err(_) => 0x0409,
+    };
+    let n = hub_get_descriptor(&hub, port, string | index as u16, lang, &mut buf).ok()?;
+    crate::descriptors::decode_string_descriptor(&buf[..n]).ok()
+}
+
 struct RootHub {
     devinst: DEVINST,
     bus: u8,
@@ -800,6 +823,7 @@ fn root_hub_info(r: &RootHub) -> DeviceInfo {
             winusb: false,
             functions: Vec::new(),
         },
+        serial_number: Default::default(),
     }
 }
 
@@ -879,6 +903,7 @@ fn describe_device(roots: &[RootHub], path: String, devinst: DEVINST) -> Option<
             winusb,
             functions,
         },
+        serial_number: Default::default(),
     })
 }
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Device::serial_number` returns the serial number without opening the
+  device: from sysfs on Linux, the IOKit registry on macOS, and the parent
+  hub on Windows (so it works whatever driver the device is bound to).
+- `Context::find_device_by_serial` and `Context::open_device_by_serial`
+  locate a device by serial number among a list of vendor/product pairs.
+
 ## [0.1.3](https://github.com/KarpelesLab/rawusb/compare/v0.1.2...v0.1.3) - 2026-09-23
 
 ### Other
