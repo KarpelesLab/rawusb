@@ -76,6 +76,7 @@ impl Handle {
         Err(Error::new(ErrorKind::NotSupported))
     }
     pub(crate) fn cancel_all(&self) {}
+    pub(crate) fn close(&self) {}
 }
 
 #[derive(Default)]

@@ -39,6 +39,7 @@ impl Drop for HandleShared {
         for iface in detached {
             let _ = self.sys.attach_kernel_driver(iface);
         }
+        self.sys.close();
     }
 }
 

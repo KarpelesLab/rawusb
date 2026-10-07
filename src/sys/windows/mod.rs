@@ -1542,6 +1542,9 @@ impl Handle {
         Ok(())
     }
 
+    /// Nothing to undo when the last user handle goes away.
+    pub(crate) fn close(&self) {}
+
     pub(crate) fn cancel_all(&self) {
         let transfers: Vec<Arc<Inner>> = lock(&self.pending).values().cloned().collect();
         for t in transfers {

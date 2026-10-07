@@ -628,6 +628,9 @@ impl Handle {
         Ok(())
     }
 
+    /// Nothing to undo when the last user handle goes away.
+    pub(crate) fn close(&self) {}
+
     pub(crate) fn cancel_all(&self) {
         for inner in self.pending_transfers() {
             let _ = self.cancel(&inner);

@@ -11,7 +11,11 @@
 //! - `read_serial_number(&DeviceInfo) -> Option<String>`: the serial number
 //!   string as the OS knows it, without opening the device.
 //! - `Handle`: configuration/interface operations, `submit`, `cancel`,
-//!   `cancel_all`.
+//!   `cancel_all`, and `close`, which runs on the caller's thread when the
+//!   last user clone of the handle is dropped. The backend handle itself may
+//!   outlive that on another thread (an in-flight transfer keeps it), so
+//!   anything the caller expects done by the time its handle is gone,
+//!   before the process may exit, belongs in `close` rather than `Drop`.
 //! - `Context::watch_hotplug(&Arc<Self>, notify)` with the `hotplug` feature:
 //!   arranges for `notify()` to be called whenever the set of attached
 //!   devices may have changed. The neutral layer re-enumerates and diffs, so

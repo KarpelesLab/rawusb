@@ -949,6 +949,7 @@ pub(crate) struct Handle {
 impl Drop for Handle {
     fn drop(&mut self) {
         self.claimed.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
+        // Normally already done by `close`.
         if *self.capture.get_mut().unwrap_or_else(|e| e.into_inner()) != Capture::None {
             let _ = self.dev().reenumerate(kUSBReEnumerateReleaseDeviceMask);
         }
@@ -1412,6 +1413,19 @@ impl Handle {
         self.abort(sub)?;
         sub.cancelled = true;
         Ok(())
+    }
+
+    /// Hands back a device this handle still holds captured, for instance
+    /// after `detach_kernel_driver` without a matching attach. Done here
+    /// rather than in `Drop`, which may run on the event thread as the
+    /// process exits and never finish.
+    pub(crate) fn close(&self) {
+        let mut capture = lock(&self.capture);
+        if *capture != Capture::None {
+            *capture = Capture::None;
+            drop(capture);
+            let _ = self.dev().reenumerate(kUSBReEnumerateReleaseDeviceMask);
+        }
     }
 
     pub(crate) fn cancel_all(&self) {
