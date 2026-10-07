@@ -1053,9 +1053,10 @@ impl Handle {
         if claimed.is_empty() && *capture == Capture::ReleasePending {
             *capture = Capture::None;
             drop(claimed);
-            // The interface is released either way; handing the device back
-            // is best effort, as on drop.
-            let _ = self.dev().reenumerate(kUSBReEnumerateReleaseDeviceMask);
+            // The interface is released whatever happens here.
+            self.dev()
+                .reenumerate(kUSBReEnumerateReleaseDeviceMask)
+                .map_err(|e| e.context("interface released, but handing the device back to macOS failed"))?;
         }
         Ok(())
     }

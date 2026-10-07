@@ -225,20 +225,29 @@ impl DeviceHandle {
 
     /// Releases a previously claimed interface, resetting it to alternate
     /// setting 0 and re-attaching a kernel driver that was auto-detached.
+    ///
+    /// The interface is no longer claimed afterwards even if this fails: the
+    /// error may come from re-attaching the kernel driver (on macOS, from
+    /// handing the device back once its last interface is released). Dropping
+    /// the handle re-attaches drivers too, but has nowhere to report a
+    /// failure, so release interfaces explicitly to find out.
     pub fn release_interface(&self, interface: u8) -> Result<()> {
-        self.shared.sys.release_interface(interface)?;
+        let released = self.shared.sys.release_interface(interface);
         self.shared
             .claimed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|&i| i != interface);
         let mut detached = self.shared.detached.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pos) = detached.iter().position(|&i| i == interface) {
-            detached.remove(pos);
-            drop(detached);
-            let _ = self.shared.sys.attach_kernel_driver(interface);
-        }
-        Ok(())
+        let reattached = match detached.iter().position(|&i| i == interface) {
+            Some(pos) => {
+                detached.remove(pos);
+                drop(detached);
+                self.shared.sys.attach_kernel_driver(interface)
+            }
+            None => Ok(()),
+        };
+        released.and(reattached)
     }
 
     /// Interfaces currently claimed through this handle.
