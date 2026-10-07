@@ -38,8 +38,9 @@
 //!
 //! On Linux the kernel network driver (`cdc_ether`, `cdc_ncm`,
 //! `rndis_host`) is detached while the device is open, which removes its
-//! network interface. On macOS and Windows the device must be bound to a
-//! generic driver (WinUSB on Windows).
+//! network interface. On macOS the same happens when running as root;
+//! otherwise, and on Windows, the device must be bound to a generic driver
+//! (WinUSB on Windows).
 
 mod cdc;
 #[cfg(feature = "pktkit")]

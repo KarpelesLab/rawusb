@@ -29,7 +29,8 @@
 //!
 //! Class helpers, ready-made drivers for common device classes built on the
 //! public API above. Each claims the interfaces it needs (detaching the
-//! kernel driver on Linux) and gives them back when dropped:
+//! kernel driver on Linux, and on macOS when running as root) and gives them
+//! back when dropped:
 //!
 //! - `hid`: [`hid::HidDevice`] and a report descriptor parser.
 //! - `msc`: [`msc::MassStorage`] (bulk-only transport, SCSI commands) and a

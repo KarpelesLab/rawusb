@@ -27,11 +27,11 @@
 //! # Platform notes
 //!
 //! The operating system's HID driver normally owns these interfaces. On
-//! Linux, [`HidDevice`] detaches it while open and re-attaches it on drop. On
-//! macOS and Windows the HID driver cannot be displaced, so this only works
-//! for devices bound to a generic driver (WinUSB on Windows); use the OS HID
-//! API (hidraw, IOHIDManager, `hid.dll`) for devices that keep their HID
-//! driver.
+//! Linux, [`HidDevice`] detaches it while open and re-attaches it on drop;
+//! macOS does the same for a process running as root. Otherwise (and always
+//! on Windows) the HID driver cannot be displaced, so this only works for
+//! devices bound to a generic driver (WinUSB on Windows); use the OS HID API
+//! (hidraw, IOHIDManager, `hid.dll`) for devices that keep their HID driver.
 
 mod report;
 

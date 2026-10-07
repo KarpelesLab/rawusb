@@ -201,14 +201,21 @@ impl DeviceHandle {
     }
 
     fn claim(&self, interface: u8, detach: bool) -> Result<()> {
+        let mut denied = None;
         if detach && self.shared.sys.kernel_driver_active(interface).unwrap_or(false) {
             match self.shared.sys.detach_kernel_driver(interface) {
                 Ok(()) => self.shared.detached.lock().unwrap_or_else(|e| e.into_inner()).push(interface),
                 Err(e) if e.kind() == ErrorKind::NotSupported || e.kind() == ErrorKind::NotFound => {}
+                // Not allowed to detach (macOS without root): the driver may
+                // still leave the interface claimable, so try; if not, the
+                // missing privilege is the error worth reporting.
+                Err(e) if e.kind() == ErrorKind::Access => denied = Some(e),
                 Err(e) => return Err(e),
             }
         }
-        self.shared.sys.claim_interface(interface)?;
+        if let Err(e) = self.shared.sys.claim_interface(interface) {
+            return Err(denied.unwrap_or(e));
+        }
         let mut claimed = self.shared.claimed.lock().unwrap_or_else(|e| e.into_inner());
         if !claimed.contains(&interface) {
             claimed.push(interface);
@@ -272,11 +279,20 @@ impl DeviceHandle {
     }
 
     /// Unbinds the kernel driver from an interface so it can be claimed.
+    ///
+    /// On macOS this needs root (or the `com.apple.vm.device-access`
+    /// entitlement) and fails with [`ErrorKind::Access`] without it. It
+    /// detaches the drivers of every interface of the device at once, except
+    /// mass-storage drivers, which macOS never detaches.
     pub fn detach_kernel_driver(&self, interface: u8) -> Result<()> {
         self.shared.sys.detach_kernel_driver(interface)
     }
 
     /// Re-binds the kernel driver to an interface.
+    ///
+    /// On macOS this hands the whole device back to the OS, which reloads
+    /// the drivers of all of its interfaces; it is deferred until this handle
+    /// has released every interface.
     pub fn attach_kernel_driver(&self, interface: u8) -> Result<()> {
         self.shared.sys.attach_kernel_driver(interface)
     }

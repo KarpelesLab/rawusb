@@ -3,7 +3,8 @@
 //! The USB user-client interfaces are COM-style objects: a pointer to a
 //! pointer to a table of function pointers. The tables below reproduce the
 //! layout of `IOUSBLib.h` up to the `182` revisions, which added the
-//! timeout-taking (`...TO`) variants this backend prefers.
+//! timeout-taking (`...TO`) variants this backend prefers, and for devices
+//! the `187` revision, which added `USBDeviceReEnumerate`.
 
 #![allow(
     non_camel_case_types,
@@ -67,6 +68,12 @@ pub(crate) const kIOUSBTransactionReturned: IOReturn = 0xe0004059u32 as i32;
 pub(crate) const kIOMasterPortDefault: mach_port_t = 0;
 pub(crate) const kIOUSBFindInterfaceDontCare: u16 = 0xFFFF;
 
+/// `USBReEnumerateOptions` from `USB.h`: terminate every kernel driver bound
+/// to the device and its (non mass-storage) interfaces, and keep them off.
+pub(crate) const kUSBReEnumerateCaptureDeviceMask: u32 = 1 << 30;
+/// Hands a captured device back to the OS, which reloads its drivers.
+pub(crate) const kUSBReEnumerateReleaseDeviceMask: u32 = 1 << 29;
+
 pub(crate) const kUSBIn: u8 = 1;
 pub(crate) const kUSBOut: u8 = 0;
 
@@ -102,6 +109,9 @@ pub(crate) const kIOUSBDeviceInterfaceID: CFUUIDBytes = CFUUIDBytes::new([
 ]);
 pub(crate) const kIOUSBDeviceInterfaceID182: CFUUIDBytes = CFUUIDBytes::new([
     0x15, 0x2f, 0xc4, 0x96, 0x48, 0x91, 0x11, 0xD5, 0x9d, 0x52, 0x00, 0x0a, 0x27, 0x80, 0x1e, 0x86,
+]);
+pub(crate) const kIOUSBDeviceInterfaceID187: CFUUIDBytes = CFUUIDBytes::new([
+    0x3C, 0x9E, 0xE1, 0xEB, 0x24, 0x02, 0x11, 0xB2, 0x8E, 0x7E, 0x00, 0x0A, 0x27, 0x80, 0x1E, 0x86,
 ]);
 pub(crate) const kIOUSBInterfaceInterfaceID: CFUUIDBytes = CFUUIDBytes::new([
     0x73, 0xc9, 0x7a, 0xe8, 0x9e, 0xf3, 0x11, 0xD4, 0xb1, 0xd0, 0x00, 0x0a, 0x27, 0x05, 0x28, 0x61,
@@ -175,7 +185,7 @@ pub(crate) struct IOCFPlugInInterface {
 }
 
 #[repr(C)]
-pub(crate) struct IOUSBDeviceInterface182 {
+pub(crate) struct IOUSBDeviceInterface187 {
     pub(crate) _reserved: *mut c_void,
     pub(crate) QueryInterface: unsafe extern "C" fn(This, CFUUIDBytes, *mut *mut c_void) -> HRESULT,
     pub(crate) AddRef: unsafe extern "C" fn(This) -> u32,
@@ -214,6 +224,8 @@ pub(crate) struct IOUSBDeviceInterface182 {
     pub(crate) USBGetManufacturerStringIndex: unsafe extern "C" fn(This, *mut u8) -> IOReturn,
     pub(crate) USBGetProductStringIndex: unsafe extern "C" fn(This, *mut u8) -> IOReturn,
     pub(crate) USBGetSerialNumberStringIndex: unsafe extern "C" fn(This, *mut u8) -> IOReturn,
+    // --- revision 187 ---
+    pub(crate) USBDeviceReEnumerate: unsafe extern "C" fn(This, u32) -> IOReturn,
 }
 
 #[repr(C)]
@@ -301,6 +313,12 @@ unsafe extern "C" {
         plane: *const c_char,
         child: *mut io_registry_entry_t,
     ) -> kern_return_t;
+    pub(crate) fn IORegistryEntryGetChildIterator(
+        entry: io_registry_entry_t,
+        plane: *const c_char,
+        iterator: *mut io_iterator_t,
+    ) -> kern_return_t;
+    pub(crate) fn IOObjectConformsTo(object: io_object_t, className: *const c_char) -> u32;
     pub(crate) fn IONotificationPortCreate(mainPort: mach_port_t) -> IONotificationPortRef;
     pub(crate) fn IONotificationPortDestroy(notify: IONotificationPortRef);
     pub(crate) fn IONotificationPortGetRunLoopSource(notify: IONotificationPortRef) -> CFRunLoopSourceRef;

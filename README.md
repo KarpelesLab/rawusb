@@ -146,10 +146,11 @@ the kernel driver (usbhid, usb-storage, ftdi_sio, cdc_acm, uvcvideo) is
 detached meanwhile and re-attached when the helper is dropped, so the
 matching `/dev` node disappears in between; a process that is killed before
 dropping it leaves the driver detached until the device is replugged. On
-macOS and Windows these drivers cannot be displaced, so the helpers only work
-with devices bound to a generic driver (WinUSB on Windows); there, prefer the
-operating system's own HID, storage, serial and camera APIs for devices that
-keep their class driver.
+macOS the same happens when running as root (see the platform notes), except
+for mass storage, whose driver macOS never lets go of. Windows drivers cannot
+be displaced, so there the helpers only work with devices bound to WinUSB;
+without root on macOS, or on Windows, prefer the operating system's own HID,
+storage, serial and camera APIs for devices that keep their class driver.
 
 With `pktkit`, a USB adapter is just another L2 device:
 
@@ -178,7 +179,7 @@ run with its feature, e.g. `cargo run --features uvc --example uvc_capture`.
 | Control / bulk / interrupt | yes | yes | yes |
 | Isochronous | yes | yes (Windows 8.1+) | yes (experimental) |
 | Hotplug (`hotplug` feature) | netlink uevents | `CM_Register_Notification` (Windows 10 1709+) | IOKit notifications |
-| Kernel driver detach | yes | n/a (WinUSB only) | not possible |
+| Kernel driver detach | yes | n/a (WinUSB only) | as root, whole device, not mass storage |
 | Device reset | yes | not supported by WinUSB | yes |
 | Set configuration | yes | only the current one | yes |
 
@@ -192,7 +193,13 @@ INF file.
 
 **macOS** can enumerate everything; claiming an interface that a kernel driver
 owns (HID, mass storage, CDC, ...) fails with `ErrorKind::Access`, as it does
-with libusb. Descriptor requests still work on such devices.
+with libusb. Descriptor requests still work on such devices. Run as root (or
+with the `com.apple.vm.device-access` entitlement) and kernel drivers can be
+detached: like libusb, rawusb captures the device, which terminates the
+drivers of all of its interfaces at once, mass storage excepted. The device
+is handed back to the OS, and its drivers reloaded, once the handle has
+released every interface (or is dropped). Without the privilege, detaching
+fails with `ErrorKind::Access`.
 
 **Isochronous transfers** are portable as long as every packet is exactly the
 endpoint's maximum packet size: WinUSB slices the buffer itself at that size

@@ -29,8 +29,10 @@
 //! The operating system's serial driver normally owns these interfaces. On
 //! Linux it is detached while the port is open (the `/dev/ttyUSB*` or
 //! `/dev/ttyACM*` node disappears) and re-attached when it is dropped. On
-//! macOS the Apple CDC and FTDI drivers cannot be displaced, and on Windows
-//! the device must be bound to WinUSB; prefer the OS serial port there.
+//! macOS the same happens when running as root (the `/dev/cu.*` node
+//! disappears); otherwise the Apple CDC and FTDI drivers cannot be displaced.
+//! On Windows the device must be bound to WinUSB. Without either, prefer the
+//! OS serial port.
 
 mod cdc;
 pub mod ftdi;

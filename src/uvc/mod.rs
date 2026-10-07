@@ -33,8 +33,9 @@
 //!
 //! On Linux the `uvcvideo` driver is detached while the [`Camera`] lives (the
 //! `/dev/video*` nodes disappear). On macOS, UVC devices are driven from user
-//! space on recent releases and may be claimable; older releases and Windows
-//! need the device bound to a generic driver (WinUSB on Windows).
+//! space on recent releases and may be claimable; a kernel driver, where
+//! there is one, is detached when running as root. Windows needs the device
+//! bound to a generic driver (WinUSB).
 //! Isochronous streaming on macOS is experimental in this crate.
 
 mod descriptors;

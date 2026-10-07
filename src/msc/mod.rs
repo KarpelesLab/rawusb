@@ -35,8 +35,8 @@
 //! The operating system's storage driver owns these interfaces. On Linux it
 //! is detached while [`MassStorage`] lives, which removes the block device
 //! from the system: never do this to a mounted drive. On macOS the storage
-//! driver cannot be displaced, and on Windows the device must be bound to
-//! WinUSB.
+//! driver cannot be displaced, even as root, and on Windows the device must
+//! be bound to WinUSB.
 
 pub mod scsi;
 

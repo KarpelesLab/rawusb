@@ -7,6 +7,14 @@
 //! are available (any macOS from the last two decades) transfer timeouts are
 //! enforced by the kernel through the `...TO` calls; otherwise the event
 //! thread aborts the pipe when the deadline passes.
+//!
+//! Kernel drivers are detached by capturing the device
+//! (`USBDeviceReEnumerate` with `kUSBReEnumerateCaptureDeviceMask`, as libusb
+//! does), which needs root or the `com.apple.vm.device-access` entitlement.
+//! Capture is all or nothing: it terminates the drivers of every interface
+//! at once, except mass-storage ones, which macOS never lets go of. The
+//! device is handed back (and its drivers reloaded) once the handle that
+//! captured it has released all of its interfaces.
 
 // IOKit constant names are kept as Apple spells them.
 #![allow(non_upper_case_globals)]
@@ -91,8 +99,10 @@ fn run_loop_mode() -> CFStringRef {
 /// An `IOUSBDeviceInterface` object shared by every `Device` and handle for
 /// one physical device.
 pub(crate) struct DeviceRef {
-    obj: *mut *mut IOUSBDeviceInterface182,
+    obj: *mut *mut IOUSBDeviceInterface187,
     has_182: bool,
+    /// `USBDeviceReEnumerate` is available (and with it, capture).
+    has_187: bool,
     rl: CFRunLoopRef,
     open_count: Mutex<u32>,
     source: Mutex<Option<CFRunLoopSourceRef>>,
@@ -141,8 +151,12 @@ impl DeviceRef {
             return Err(io_error(kr, "IOCreatePlugInInterfaceForService"));
         }
         let mut obj: *mut c_void = std::ptr::null_mut();
-        let mut has_182 = true;
-        let mut hr = call!(plugin, QueryInterface, kIOUSBDeviceInterfaceID182, &mut obj);
+        let (mut has_182, mut has_187) = (true, true);
+        let mut hr = call!(plugin, QueryInterface, kIOUSBDeviceInterfaceID187, &mut obj);
+        if hr != 0 || obj.is_null() {
+            has_187 = false;
+            hr = call!(plugin, QueryInterface, kIOUSBDeviceInterfaceID182, &mut obj);
+        }
         if hr != 0 || obj.is_null() {
             has_182 = false;
             hr = call!(plugin, QueryInterface, kIOUSBDeviceInterfaceID, &mut obj);
@@ -157,8 +171,9 @@ impl DeviceRef {
         // SAFETY: we keep the run loop alive as long as this object.
         unsafe { CFRetain(rl) };
         Ok(DeviceRef {
-            obj: obj as *mut *mut IOUSBDeviceInterface182,
+            obj: obj as *mut *mut IOUSBDeviceInterface187,
             has_182,
+            has_187,
             rl,
             open_count: Mutex::new(0),
             source: Mutex::new(None),
@@ -210,6 +225,47 @@ impl DeviceRef {
             if *count == 0 {
                 call!(self.obj, USBDeviceClose);
             }
+        }
+    }
+
+    /// Opens the device again after a capture or release, which drops the
+    /// open it had, and recreates its async event source. Every handle
+    /// sharing the device keeps its share of the open.
+    fn reopen(&self) -> Result<()> {
+        let count = lock(&self.open_count);
+        if *count > 0 {
+            call!(self.obj, USBDeviceClose);
+            let kr = if self.has_182 {
+                call!(self.obj, USBDeviceOpenSeize)
+            } else {
+                call!(self.obj, USBDeviceOpen)
+            };
+            check(kr, "USBDeviceOpen")?;
+        }
+        drop(count);
+        if let Some(src) = lock(&self.source).take() {
+            // SAFETY: removing and releasing a source we created and added.
+            unsafe {
+                CFRunLoopRemoveSource(self.rl, src, run_loop_mode());
+                CFRelease(src);
+            }
+        }
+        self.ensure_event_source()
+    }
+
+    /// `USBDeviceReEnumerate` with capture/release options.
+    fn reenumerate(&self, options: u32) -> Result<()> {
+        if !self.has_187 {
+            return Err(Error::with_message(
+                ErrorKind::NotSupported,
+                "this IOKit revision cannot detach kernel drivers",
+            ));
+        }
+        match call!(self.obj, USBDeviceReEnumerate, options) {
+            kIOReturnSuccess => Ok(()),
+            kIOReturnNotPrivileged => Err(Error::from_code(ErrorKind::Access, kIOReturnNotPrivileged)
+                .context("detaching kernel drivers on macOS requires root or the com.apple.vm.device-access entitlement")),
+            kr => Err(io_error(kr, "USBDeviceReEnumerate")),
         }
     }
 
@@ -496,7 +552,8 @@ impl Context {
         let handle = Arc::new(Handle {
             ctx: Arc::clone(self),
             info: Arc::clone(dev),
-            is_open,
+            is_open: AtomicBool::new(is_open),
+            capture: Mutex::new(Capture::None),
             claimed: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             next_frame: Mutex::new(HashMap::new()),
@@ -865,10 +922,23 @@ fn find_interface(dev: &DeviceRef, number: u8) -> Result<Option<(io_service_t, *
 
 // ----- handle ----------------------------------------------------------------------------------
 
+/// Whether a handle holds the device captured (its kernel drivers detached).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Capture {
+    None,
+    Held,
+    /// Re-attaching was asked for while interfaces were still claimed; the
+    /// device is handed back when the last one is released.
+    ReleasePending,
+}
+
 pub(crate) struct Handle {
     ctx: Arc<Context>,
     info: Arc<DeviceInfo>,
-    is_open: bool,
+    /// This handle holds a share of the device's open. Set late when a
+    /// capture takes a device another driver had open.
+    is_open: AtomicBool,
+    capture: Mutex<Capture>,
     claimed: Mutex<HashMap<u8, ClaimedIface>>,
     pending: Mutex<HashMap<usize, Arc<Inner>>>,
     /// Next bus frame to schedule for each isochronous endpoint.
@@ -879,7 +949,10 @@ pub(crate) struct Handle {
 impl Drop for Handle {
     fn drop(&mut self) {
         self.claimed.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
-        if self.is_open {
+        if *self.capture.get_mut().unwrap_or_else(|e| e.into_inner()) != Capture::None {
+            let _ = self.dev().reenumerate(kUSBReEnumerateReleaseDeviceMask);
+        }
+        if *self.is_open.get_mut() {
             self.info.location.dev.close();
         }
         self.ctx.wake();
@@ -908,7 +981,7 @@ impl Handle {
     }
 
     fn require_open(&self) -> Result<()> {
-        if self.is_open {
+        if self.is_open.load(Ordering::Relaxed) {
             Ok(())
         } else {
             Err(Error::with_message(
@@ -934,6 +1007,12 @@ impl Handle {
         if claimed.contains_key(&interface) {
             return Ok(());
         }
+        let ci = self.open_interface(interface)?;
+        claimed.insert(interface, ci);
+        Ok(())
+    }
+
+    fn open_interface(&self, interface: u8) -> Result<ClaimedIface> {
         let Some((service, obj, has_182)) = find_interface(self.dev(), interface)? else {
             return Err(Error::with_message(ErrorKind::NotFound, "no such interface"));
         };
@@ -962,15 +1041,23 @@ impl Handle {
             pipes: Vec::new(),
         };
         ci.refresh_pipes();
-        claimed.insert(interface, ci);
-        Ok(())
+        Ok(ci)
     }
 
     pub(crate) fn release_interface(&self, interface: u8) -> Result<()> {
-        match lock(&self.claimed).remove(&interface) {
-            Some(_) => Ok(()),
-            None => Err(Error::with_message(ErrorKind::NotFound, "interface not claimed")),
+        let mut claimed = lock(&self.claimed);
+        if claimed.remove(&interface).is_none() {
+            return Err(Error::with_message(ErrorKind::NotFound, "interface not claimed"));
         }
+        let mut capture = lock(&self.capture);
+        if claimed.is_empty() && *capture == Capture::ReleasePending {
+            *capture = Capture::None;
+            drop(claimed);
+            // The interface is released either way; handing the device back
+            // is best effort, as on drop.
+            let _ = self.dev().reenumerate(kUSBReEnumerateReleaseDeviceMask);
+        }
+        Ok(())
     }
 
     pub(crate) fn set_alt_setting(&self, interface: u8, alt: u8) -> Result<()> {
@@ -1010,31 +1097,91 @@ impl Handle {
             return Err(Error::with_message(ErrorKind::NotFound, "no such interface"));
         };
         call!(obj, Release);
-        let mut child: io_registry_entry_t = 0;
-        // SAFETY: valid service; a child in the service plane is a driver.
-        let kr = unsafe { IORegistryEntryGetChildEntry(service, c"IOService".as_ptr(), &mut child) };
-        // SAFETY: releasing what we obtained.
+        // A child in the service plane is a driver, unless it is a user
+        // client (ours included).
+        let mut iter: io_iterator_t = 0;
+        let mut active = false;
+        // SAFETY: valid service and out-pointer; every object obtained here
+        // is released before returning.
         unsafe {
-            if kr == kIOReturnSuccess && child != 0 {
-                IOObjectRelease(child);
+            if IORegistryEntryGetChildIterator(service, c"IOService".as_ptr(), &mut iter) == kIOReturnSuccess {
+                loop {
+                    let child = IOIteratorNext(iter);
+                    if child == 0 {
+                        break;
+                    }
+                    active |= IOObjectConformsTo(child, c"IOUserClient".as_ptr()) == 0;
+                    IOObjectRelease(child);
+                }
+                IOObjectRelease(iter);
             }
             IOObjectRelease(service);
         }
-        Ok(kr == kIOReturnSuccess && child != 0)
+        Ok(active)
     }
 
-    pub(crate) fn detach_kernel_driver(&self, _interface: u8) -> Result<()> {
-        Err(Error::with_message(
-            ErrorKind::NotSupported,
-            "kernel drivers cannot be detached on macOS",
-        ))
+    /// Captures the device, which detaches the kernel drivers of all of its
+    /// interfaces at once (see the module documentation).
+    pub(crate) fn detach_kernel_driver(&self, interface: u8) -> Result<()> {
+        if !self.kernel_driver_active(interface)? {
+            return Err(Error::with_message(ErrorKind::NotFound, "no kernel driver attached"));
+        }
+        let mut capture = lock(&self.capture);
+        if *capture != Capture::None {
+            // Whatever survived our capture is a mass-storage driver.
+            return Err(Error::with_message(
+                ErrorKind::NotSupported,
+                "macOS does not detach mass-storage drivers",
+            ));
+        }
+        let dev = self.dev();
+        dev.reenumerate(kUSBReEnumerateCaptureDeviceMask)?;
+        *capture = Capture::Held;
+        drop(capture);
+
+        // Capturing drops the device's open and our interfaces; take them
+        // back, as libusb does. A device a driver held open when this handle
+        // was opened can be opened now.
+        if self.is_open.load(Ordering::Relaxed) {
+            dev.reopen()?;
+        } else {
+            dev.open()?;
+            self.is_open.store(true, Ordering::Relaxed);
+        }
+        let mut claimed = lock(&self.claimed);
+        let alts: Vec<(u8, u8)> = claimed.iter().map(|(&i, ci)| (i, prop!(ci.obj, GetAlternateSetting, u8))).collect();
+        claimed.clear();
+        for (i, alt) in alts {
+            let ci = self.open_interface(i).map_err(|e| e.context("reclaiming interface after detach"))?;
+            if alt != 0 {
+                check(call!(ci.obj, SetAlternateInterface, alt), "SetAlternateInterface")?;
+            }
+            claimed.insert(i, ci);
+        }
+        for ci in claimed.values_mut() {
+            ci.refresh_pipes();
+        }
+        Ok(())
     }
 
+    /// Hands a captured device back to the OS, which reloads its kernel
+    /// drivers. Deferred until this handle has released every interface,
+    /// since the drivers come back for all of them at once.
     pub(crate) fn attach_kernel_driver(&self, _interface: u8) -> Result<()> {
-        Err(Error::with_message(
-            ErrorKind::NotSupported,
-            "kernel drivers cannot be attached on macOS",
-        ))
+        let claimed = lock(&self.claimed);
+        let mut capture = lock(&self.capture);
+        match *capture {
+            Capture::None => Err(Error::with_message(ErrorKind::NotFound, "no kernel driver was detached")),
+            _ if !claimed.is_empty() => {
+                *capture = Capture::ReleasePending;
+                Ok(())
+            }
+            _ => {
+                *capture = Capture::None;
+                drop(claimed);
+                self.dev().reenumerate(kUSBReEnumerateReleaseDeviceMask)
+            }
+        }
     }
 
     // ----- transfers -----
