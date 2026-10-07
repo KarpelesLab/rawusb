@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/KarpelesLab/rawusb/compare/v0.1.4...v0.1.5) - 2026-10-07
+
+### Other
+
+- Support kernel driver detach on macOS (requires root)
+
 ## [0.1.4](https://github.com/KarpelesLab/rawusb/compare/v0.1.3...v0.1.4) - 2026-09-24
 
 ### Other
